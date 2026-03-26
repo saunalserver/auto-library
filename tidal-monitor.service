@@ -4,11 +4,11 @@ After=network.target
 
 [Service]
 Type=oneshot
-User=saunalserver
-WorkingDirectory=/home/saunalserver/projects/tidal_auto_monitor
-ExecStart=/usr/bin/python3 /home/saunalserver/projects/tidal_auto_monitor/monitor.py
-StandardOutput=append:/home/saunalserver/projects/tidal_auto_monitor/logs/systemd.log
-StandardError=append:/home/saunalserver/projects/tidal_auto_monitor/logs/systemd.log
+User=YOUR_USER
+WorkingDirectory=/path/to/tidal_auto_monitor
+ExecStart=/usr/bin/python3 /path/to/tidal_auto_monitor/monitor.py
+StandardOutput=append:/path/to/tidal_auto_monitor/logs/systemd.log
+StandardError=append:/path/to/tidal_auto_monitor/logs/systemd.log
 
 [Install]
 WantedBy=multi-user.target

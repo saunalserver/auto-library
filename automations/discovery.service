@@ -1,0 +1,14 @@
+[Unit]
+Description=Weekly Discovery Downloads from Last.fm
+After=network.target
+
+[Service]
+Type=oneshot
+User=saunalserver
+WorkingDirectory=/home/saunalserver/projects/tidal_auto_monitor
+ExecStart=/usr/bin/python3 /home/saunalserver/projects/tidal_auto_monitor/automations/discovery_recommendations.py
+StandardOutput=append:/home/saunalserver/projects/tidal_auto_monitor/logs/discovery.log
+StandardError=append:/home/saunalserver/projects/tidal_auto_monitor/logs/discovery.log
+
+[Install]
+WantedBy=multi-user.target

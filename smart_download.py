@@ -5,10 +5,12 @@ Smart album downloader - searches Tidal properly and validates before downloadin
 import sys
 import re
 import subprocess
+import os
 from difflib import SequenceMatcher
+from pathlib import Path
 
-TIDDL_PYTHON = "/home/saunalserver/.local/share/pipx/venvs/tiddl/bin/python3"
-TIDDL_BIN = "/home/saunalserver/.local/bin/tiddl"
+TIDDL_PYTHON = os.getenv('TIDDL_PYTHON', "/usr/bin/python3")
+TIDDL_BIN = os.getenv('TIDDL_BINARY', str(Path.home() / ".local/bin/tiddl"))
 
 def normalize(text):
     if not text:
