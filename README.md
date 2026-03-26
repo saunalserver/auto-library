@@ -1,46 +1,38 @@
-# tidal-monitor
+# Tidal Pipeline (Tidal Auto-Monitor)
 
-> Automated Tidal music download based on Last.fm listening history
+An intelligent background automation service that bridges your listening habits with local high-fidelity music management. It monitors your Last.fm scrobbles and automatically sources high-quality albums from Tidal when tracks hit your personal popularity thresholds.
 
-## Quick Start
+## ✨ Key Features
+- **Taste-Driven Automation**: Tracks track play counts via Last.fm API. Once a threshold is met, the system identifies the associated album for download.
+- **Smart Sourcing**: Utilizes the Tidal API to find the best matching high-quality albums, prioritizing FLAC/high-fidelity versions.
+- **Library Integration**: Automatically updates local Navidrome libraries, ensuring your self-hosted music collection stays perfectly in sync with your streaming habits.
+- **Robust Error Handling**: Features failed-download tracking with automatic retry logic and authentication expiry monitoring.
+- **Headless Architecture**: Designed to run as a background systemd service with comprehensive logging and Ntfy notification support.
 
-```bash
-# Clone
-git clone https://github.com/saunalserver/tidal-monitor.git
-cd tidal-monitor
+## 🛠️ Tech Stack
+- **Language**: Python
+- **APIs**: Last.fm API, Tidal API
+- **Tools**: `tiddl` (Tidal downloader), `navidrome` (Library indexing)
+- **Storage**: SQLite (Track play counts and download history)
+- **Service**: Systemd
 
-# Install dependencies
-pip install -r requirements.txt
+## 🚀 Setup
+1. **Clone the repository**
+2. **Install dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   ```
+3. **Configure Environment**: Copy `.env.example` to `.env` and provide your:
+   - `LASTFM_API_KEY` & `LASTFM_USERNAME`
+   - `MUSIC_ROOT` (Target download directory)
+   - `TIDDL_BINARY` path
+4. **Initialize Service**: Deploy the provided `tidal-monitor.service` to your systemd configuration.
 
-# Run monitor
-python3 monitor.py
-```
+## 📊 How it Works
+1. **Scrobble Tracking**: The monitor polls Last.fm for recent activity.
+2. **Threshold Check**: Track play counts are updated in a local SQLite database.
+3. **Smart Download**: When a track hits the threshold (default: 3 plays), the `smart_download.py` script searches Tidal for the most accurate album match.
+4. **Library Sync**: Successful downloads are recorded, preventing duplicates and readying the files for Navidrome indexing.
 
-## What It Does
-
-Monitors Last.fm scrobbles and automatically downloads full albums from Tidal when you've listened to 3+ tracks from that album.
-
-## Documentation
-
-Full context: `/home/saunalserver/obsidian-vault/nexus/01_PROJECTS/tidal-monitor/CONTEXT.md`
-
-## Components
-
-| Component | Purpose |
-|-----------|---------|
-| monitor.py | Main script - checks Last.fm, triggers downloads |
-| smart_download.py | Validates artist/album match, downloads by ID |
-| auto-lyrics.sh | Cron job - fetches missing lyrics |
-| auto-recommendations.sh | Cron job - generates recommendations |
-
-## Status
-
-| Field | Value |
-|-------|-------|
-| State | Active |
-| Music folder | `/mnt/photos/flac_music` |
-| Last.fm user | `Shlaghetto` |
-
----
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
+## 🛡️ License
+MIT
