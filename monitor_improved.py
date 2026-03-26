@@ -4,21 +4,25 @@ TIDAL Auto-Monitor - Improved version with reliability fixes:
 - Auth check before downloads (notifies if broken)
 - Failed download tracking with retry
 - Notifications on failures, not just success
-"""
-NTFY_URL = 'http://localhost:8093/music'
-import sys, sqlite3, subprocess, time, json, re
+NTFY_URL = os.getenv('NTFY_URL', 'http://localhost:8093/music')
+import sys, sqlite3, subprocess, time, json, re, os
 from pathlib import Path
 from datetime import datetime
 import urllib.request, urllib.parse
+from dotenv import load_dotenv
+
+load_dotenv()
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DATABASE_PATH = PROJECT_ROOT / 'database' / 'monitor.db'
 LOG_DIR = PROJECT_ROOT / 'logs'
 LOG_FILE = LOG_DIR / 'monitor.log'
-MUSIC_ROOT = Path('/mnt/photos/flac_music')
-TIDDL_BINARY = str(Path.home() / '.local' / 'bin' / 'tiddl')
-LASTFM_API_KEY = '***REMOVED:LASTFM_API_KEY***'
-LASTFM_USERNAME = 'Shlaghetto'
+MUSIC_ROOT = Path(os.getenv('MUSIC_ROOT', '/path/to/music'))
+TIDDL_BINARY = os.getenv('TIDDL_BINARY', str(Path.home() / '.local' / 'bin' / 'tiddl'))
+SMART_DOWNLOAD = str(PROJECT_ROOT / 'smart_download.py')
+LASTFM_API_KEY = os.getenv('LASTFM_API_KEY')
+LASTFM_USERNAME = os.getenv('LASTFM_USERNAME')
+
 LASTFM_API_URL = 'http://ws.audioscrobbler.com/2.0/'
 PLAY_THRESHOLD = 3
 NAVIDROME_CONTAINER = "navidrome"

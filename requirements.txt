@@ -1,3 +1,4 @@
 # Python dependencies for tidal-monitor
 pylast
 requests
+python-dotenv
