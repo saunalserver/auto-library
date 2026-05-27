@@ -1,0 +1,11 @@
+[Unit]
+Description=Pitchfork Selects - Weekly playlist automation
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/saunalserver/projects/tidal_auto_monitor
+ExecStart=/usr/bin/python3 /home/saunalserver/projects/tidal_auto_monitor/automations/pitchfork_selects.py
+StandardOutput=append:/home/saunalserver/projects/tidal_auto_monitor/logs/pitchfork_selects_systemd.log
+StandardError=append:/home/saunalserver/projects/tidal_auto_monitor/logs/pitchfork_selects_systemd.log

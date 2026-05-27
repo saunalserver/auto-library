@@ -54,18 +54,34 @@ def normalize(text):
     return re.sub(r"\s+", " ", text.strip().lower())
 
 def check_tiddl_auth():
-    """Check if tiddl is authenticated by running a simple search."""
+    """Check if tiddl is authenticated by making an actual API call."""
+    TIDDL_PYTHON = os.getenv('TIDDL_PYTHON', str(Path.home() / ".local/share/pipx/venvs/tiddl/bin/python"))
+    code = '''
+from tiddl.api import TidalApi
+from tiddl.config import Config
+try:
+    config = Config.fromFile()
+    api = TidalApi(config.auth.token, config.auth.user_id, config.auth.country_code)
+    api.getSearch("test")
+    print("OK")
+except Exception as e:
+    print(f"FAIL: {e}")
+'''
     try:
         result = subprocess.run(
-            [TIDDL_BINARY, 'search', 'test', '--help'],
-            capture_output=True, text=True, timeout=10
+            [TIDDL_PYTHON, "-c", code],
+            capture_output=True, text=True, timeout=15
         )
-        # If we get "You must login first" anywhere, auth is broken
-        if 'login first' in result.stderr.lower() or 'login first' in result.stdout.lower():
-            return False, "Auth expired - please run: tiddl auth login"
-        return True, None
+        if "OK" in result.stdout:
+            return True, None
+        error = result.stdout.strip() + " " + result.stderr.strip()
+        if "401" in error or "expired" in error.lower() or "login" in error.lower():
+            return False, f"Auth expired or invalid: {error[:200]}"
+        return False, f"Auth check failed: {error[:200]}"
+    except subprocess.TimeoutExpired:
+        return False, "Auth check timed out"
     except Exception as e:
-        return False, f"tiddl check failed: {e}"
+        return False, f"Auth check failed: {e}"
 
 def init_database():
     DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -84,6 +100,9 @@ def init_database():
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, artist TEXT, album TEXT,
                   fail_count INTEGER DEFAULT 1, first_failed TIMESTAMP, last_failed TIMESTAMP,
                   last_error TEXT, UNIQUE(artist, album))''')
+    c.execute('''CREATE TABLE IF NOT EXISTS album_watch
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, artist TEXT, track_title TEXT,
+                  added TIMESTAMP, source TEXT, UNIQUE(artist, track_title))''')
     conn.commit()
     conn.close()
     log('Database initialized')
@@ -296,18 +315,18 @@ def download_album(artist, album, checker, min_tracks=2):
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
         combined_output = result.stdout + result.stderr
-        
+
         # Log key output for debugging
         for line in combined_output.split('\n'):
-            if line.strip() and ('Candidate' in line or 'Best match' in line or 'ERROR' in line or 'Downloading' in line):
+            if line.strip() and ('Candidate' in line or 'Best match' in line or 'ERROR' in line or 'Downloading' in line or 'API_Error' in line):
                 log(f'  {line.strip()}')
-        
-        # Check for auth failure
-        if 'login first' in combined_output.lower():
+
+        # Check for auth failure (from new ApiError in smart_download)
+        if 'login first' in combined_output.lower() or 'auth expired' in combined_output.lower() or 'api_error' in combined_output.lower():
             log(f'Auth failed during download: {artist} - {album}', 'ERROR')
             record_failed_download(artist, album, "Auth expired")
             return False, "auth_failed"
-        
+
         # Check for not found
         if 'could not find matching album' in combined_output.lower():
             log(f'Not found on Tidal: {artist} - {album}', 'WARNING')
@@ -339,7 +358,8 @@ def process_downloads(tracks_to_download, checker):
             albums_to_download[key] = track
     log(f'Found {len(albums_to_download)} unique albums to check')
     downloaded_count, skipped_count, failed_count = 0, 0, 0
-    
+    failed_albums = []  # (artist, album, error_type)
+
     for (artist, album), track in albums_to_download.items():
         owned, reason = checker.is_album_owned(artist, album)
         if owned:
@@ -356,29 +376,38 @@ def process_downloads(tracks_to_download, checker):
             downloaded_count += 1
         else:
             failed_count += 1
+            failed_albums.append((artist, album, error_type))
             if error_type == "auth_failed":
                 # Stop trying if auth is broken
                 log("Auth failed - stopping further downloads", "ERROR")
                 break
         time.sleep(5)
-    
+
     log(f'Summary: {downloaded_count} downloaded, {skipped_count} skipped, {failed_count} failed')
-    
-    # Notify if there were failures
+
+    # Notify with details on failures
     if failed_count > 0:
-        notify('Download Failures', f'{failed_count} album(s) failed to download', 'warning', 'high')
-    
+        lines = []
+        for artist, album, error_type in failed_albums:
+            reason = {"not_found": "not on Tidal", "auth_failed": "auth expired",
+                      "download_failed": "download error", "exception": "exception"}.get(error_type, error_type)
+            lines.append(f"  {artist} - {album} ({reason})")
+        msg = f"{failed_count} album(s) failed:\n" + "\n".join(lines)
+        notify('Download Failures', msg, 'warning', 'high')
+
     return downloaded_count
 
 def retry_failed_downloads(checker):
     """Retry previously failed downloads."""
     failed = get_failed_downloads_for_retry()
     if not failed:
+        # Check for permanently failed albums and notify once
+        notify_permanently_failed()
         return 0
-    
+
     log(f"Retrying {len(failed)} previously failed downloads")
     success_count = 0
-    
+
     for item in failed:
         artist, album = item['artist'], item['album']
         owned, reason = checker.is_album_owned(artist, album)
@@ -386,17 +415,153 @@ def retry_failed_downloads(checker):
             log(f"Retry skip - now owned ({reason}): {artist} - {album}")
             clear_failed_download(artist, album)
             continue
-        
+
         success, error_type = download_album(artist, album, checker)
         if success:
             success_count += 1
         elif error_type == "auth_failed":
             break
         time.sleep(5)
-    
+
     if success_count > 0:
         log(f"Retry summary: {success_count} succeeded")
+
+    # After retrying, check for newly permanent failures
+    notify_permanently_failed()
+
     return success_count
+
+def notify_permanently_failed():
+    """Notify about albums that hit MAX_RETRIES and won't be retried anymore."""
+    conn = sqlite3.connect(DATABASE_PATH)
+    c = conn.cursor()
+    c.execute("""SELECT artist, album, fail_count, last_error FROM failed_downloads
+                 WHERE fail_count >= ? ORDER BY last_failed DESC""", (MAX_RETRIES,))
+    permanent = c.fetchall()
+    conn.close()
+
+    if not permanent:
+        return
+
+    # Only notify once per 24h for permanent failures
+    state_conn = sqlite3.connect(DATABASE_PATH)
+    state_cur = state_conn.cursor()
+    state_cur.execute("SELECT value FROM daemon_state WHERE key='last_permanent_alert'")
+    row = state_cur.fetchone()
+    state_conn.close()
+    last_alert = int(row[0]) if row else 0
+    if time.time() - last_alert < 86400:
+        return
+
+    lines = []
+    for artist, album, fails, error in permanent:
+        short_error = (error or "unknown")[:60]
+        lines.append(f"  {artist} - {album} ({fails}x: {short_error})")
+    msg = f"{len(permanent)} album(s) permanently failed:\n" + "\n".join(lines)
+    notify('Albums Permanently Failed', msg, 'x', 'high')
+
+    state_conn = sqlite3.connect(DATABASE_PATH)
+    state_cur = state_conn.cursor()
+    state_cur.execute("INSERT OR REPLACE INTO daemon_state (key, value) VALUES ('last_permanent_alert', ?)",
+                      (str(int(time.time())),))
+    state_conn.commit()
+    state_conn.close()
+
+def check_album_watch(checker):
+    """Check watched artists for new full albums. Singles from Pitchfork/etc get replaced."""
+    conn = sqlite3.connect(DATABASE_PATH)
+    c = conn.cursor()
+    c.execute("SELECT DISTINCT artist FROM album_watch")
+    watched_artists = [row[0] for row in c.fetchall()]
+    conn.close()
+
+    if not watched_artists:
+        return
+
+    log(f"Checking album watch for {len(watched_artists)} artists")
+
+    TIDDL_PYTHON = os.getenv('TIDDL_PYTHON', str(Path.home() / ".local/share/pipx/venvs/tiddl/bin/python"))
+    found_count = 0
+
+    for artist in watched_artists:
+        code = '''
+from tiddl.api import TidalApi
+from tiddl.config import Config
+import sys
+try:
+    config = Config.fromFile()
+    api = TidalApi(config.auth.token, config.auth.user_id, config.auth.country_code)
+    results = api.getSearch("''' + artist.replace('"', '\\"') + '''")
+except Exception as e:
+    print(f"API_ERROR: {e}", file=sys.stderr)
+    sys.exit(2)
+for a in results.artists.items[:3]:
+    print(f"ARTIST|{a.id}|{a.name}")
+'''
+        result = subprocess.run([TIDDL_PYTHON, "-c", code], capture_output=True, text=True, timeout=15)
+        if result.returncode == 2:
+            log(f"Album watch API error for {artist}", "WARNING")
+            continue
+
+        # Find matching artist
+        artist_id = None
+        for line in result.stdout.strip().split("\n"):
+            parts = line.split("|")
+            if len(parts) >= 3 and parts[0] == "ARTIST":
+                if normalize(parts[2]) == normalize(artist):
+                    artist_id = parts[1]
+                    break
+        if not artist_id:
+            continue
+
+        # Get their albums
+        code2 = '''
+from tiddl.api import TidalApi
+from tiddl.config import Config
+import sys
+try:
+    config = Config.fromFile()
+    api = TidalApi(config.auth.token, config.auth.user_id, config.auth.country_code)
+    results = api.getArtistAlbums(''' + artist_id + ''')
+except Exception as e:
+    print(f"API_ERROR: {e}", file=sys.stderr)
+    sys.exit(2)
+for a in results.items[:15]:
+    print(f"{a.id}|{a.title}|{a.numberOfTracks}")
+'''
+        result2 = subprocess.run([TIDDL_PYTHON, "-c", code2], capture_output=True, text=True, timeout=15)
+        if result2.returncode == 2:
+            continue
+
+        # Find full albums (>2 tracks) we don't own yet
+        for line in result2.stdout.strip().split("\n"):
+            parts = line.split("|")
+            if len(parts) < 3:
+                continue
+            album_id, album_title, track_count = parts[0], parts[1], int(parts[2]) if parts[2].isdigit() else 0
+            if track_count < 3:
+                continue
+            owned, _ = checker.is_album_owned(artist, album_title)
+            if owned:
+                continue
+
+            log(f"Watch found new album: {artist} - {album_title} ({track_count} tracks)")
+            success, error_type = download_album(artist, album_title, checker)
+            if success:
+                found_count += 1
+                notify('Watch Album Downloaded', f'{artist} - {album_title} (full album)', 'headphones,star')
+                # Remove from watch now that we have a full album
+                conn2 = sqlite3.connect(DATABASE_PATH)
+                conn2.execute("DELETE FROM album_watch WHERE artist = ?", (artist,))
+                conn2.commit()
+                conn2.close()
+                log(f"Removed {artist} from album watch")
+                break  # One new album per artist per run is enough
+            time.sleep(5)
+        time.sleep(2)
+
+    if found_count:
+        log(f"Album watch summary: {found_count} new full albums found")
 
 def main():
     log('='*60)
@@ -442,6 +607,7 @@ def main():
     # Retry failed downloads if auth is OK
     if auth_ok:
         retry_failed_downloads(checker)
+        check_album_watch(checker)
     
     set_last_check_time(current_time)
     log('='*60)

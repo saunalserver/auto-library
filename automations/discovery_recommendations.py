@@ -44,7 +44,9 @@ def notify(title: str, message: str, tags: str = "musical_note", priority: str =
         req.add_header("Priority", priority)
         urllib.request.urlopen(req, timeout=10)
     except Exception as e:
-        pass  # Don't fail if ntfy is unavailable
+        # Log but don't fail the whole script
+        import sys
+        print(f"Ntfy notification failed: {e}", file=sys.stderr)
 
 
 @dataclass
@@ -293,19 +295,22 @@ def write_queue(queue_file: Path, selection: List[Candidate], logger: logging.Lo
         logger.warning("Failed to write queue file: %s", exc)
 
 
-def run_downloads(selection: List[Candidate], smart_download_path: Path, ownership: OwnershipChecker, logger: logging.Logger) -> Tuple[int, int]:
+def run_downloads(selection: List[Candidate], smart_download_path: Path, ownership: OwnershipChecker, logger: logging.Logger) -> Tuple[int, int, List[str], List[str]]:
     """
     Download albums using smart_download.py for reliable matching.
     This avoids the 'tiddl search ... download' anti-pattern that grabs wrong albums.
+    Returns (success_count, failure_count, succeeded_names, failed_names).
     """
     if not selection:
-        return 0, 0
+        return 0, 0, [], []
     if not smart_download_path.exists():
         logger.error("smart_download.py not found at %s", smart_download_path)
-        return 0, len(selection)
+        return 0, len(selection), [], [f"{c.artist} - {c.album}" for c in selection]
 
     success = 0
     failure = 0
+    succeeded = []
+    failed = []
 
     for item in selection:
         logger.info("Smart downloading: %s - %s", item.artist, item.album)
@@ -326,19 +331,27 @@ def run_downloads(selection: List[Candidate], smart_download_path: Path, ownersh
                 logger.info("SUCCESS: %s - %s", item.artist, item.album)
                 ownership.record_download(item.artist, item.album)
                 success += 1
+                succeeded.append(f"{item.artist} - {item.album}")
             elif 'could not find matching album' in combined_output.lower():
                 logger.warning("NOT FOUND on Tidal: %s - %s", item.artist, item.album)
+                failed.append(f"{item.artist} - {item.album} (not on Tidal)")
+                failure += 1
+            elif 'auth expired' in combined_output.lower() or 'api_error' in combined_output.lower():
+                logger.error("AUTH FAILED: %s - %s", item.artist, item.album)
+                failed.append(f"{item.artist} - {item.album} (auth expired)")
                 failure += 1
             else:
                 logger.error("FAILED: %s - %s (exit %s)", item.artist, item.album, result.returncode)
+                failed.append(f"{item.artist} - {item.album} (error)")
                 failure += 1
         except Exception as exc:
             logger.error("Exception downloading %s - %s: %s", item.artist, item.album, exc)
+            failed.append(f"{item.artist} - {item.album} (exception)")
             failure += 1
 
         time.sleep(3)
 
-    return success, failure
+    return success, failure, succeeded, failed
 
 
 def build_candidates(lastfm: LastfmClient, ownership: OwnershipChecker, top_artists: List[str], logger: logging.Logger) -> Tuple[List[Candidate], List[Candidate], dict]:
@@ -502,14 +515,16 @@ def main() -> int:
         notify("Discovery Report", f"Found {len(selection)} candidate albums (dry-run)", "mag")
         return 0
 
-    success, failure = run_downloads(selection, config["smart_download"], ownership, logger)
+    success, failure, succeeded, failed = run_downloads(selection, config["smart_download"], ownership, logger)
     logger.info("Downloads complete: %d success, %d failed", success, failure)
 
-    # Notify results
+    # Notify results with album names
     if success > 0:
-        notify("Discovery Downloads", f"Downloaded {success} new albums from your weekly discovery", "headphones,arrow_down")
+        msg = f"Downloaded {success} new albums:\n" + "\n".join(f"  + {name}" for name in succeeded)
+        notify("Discovery Downloads", msg, "headphones,arrow_down")
     if failure > 0:
-        notify("Discovery Failures", f"{failure} albums failed to download", "warning", "high")
+        msg = f"{failure} albums failed:\n" + "\n".join(f"  x {name}" for name in failed)
+        notify("Discovery Failures", msg, "warning", "high")
 
     return 0
 
