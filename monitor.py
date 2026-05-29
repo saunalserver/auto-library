@@ -467,23 +467,51 @@ def notify_permanently_failed():
     state_conn.commit()
     state_conn.close()
 
+def check_single_on_album(album_id, single_title):
+    """Check if a watched single appears on a candidate album's tracklist."""
+    TIDDL_PYTHON = os.getenv('TIDDL_PYTHON', str(Path.home() / ".local/share/pipx/venvs/tiddl/bin/python"))
+    code = '''
+from tiddl.api import TidalApi
+from tiddl.config import Config
+import sys
+try:
+    config = Config.fromFile()
+    api = TidalApi(config.auth.token, config.auth.user_id, config.auth.country_code)
+    tracks = api.getAlbumItems(''' + str(album_id) + ''')
+    for item in tracks.items:
+        if hasattr(item.item, 'title'):
+            print(item.item.title)
+except Exception as e:
+    print(f"API_ERROR: {e}", file=sys.stderr)
+    sys.exit(2)
+'''
+    try:
+        result = subprocess.run([TIDDL_PYTHON, "-c", code], capture_output=True, text=True, timeout=15)
+        if result.returncode != 0:
+            return True  # API error — don't block, let it through
+        track_titles = result.stdout.strip().lower().split("\n")
+        single_lower = single_title.lower().strip()
+        return any(single_lower in t for t in track_titles)
+    except Exception:
+        return True  # On error, don't block
+
 def check_album_watch(checker):
     """Check watched artists for new full albums. Singles from Pitchfork/etc get replaced."""
     conn = sqlite3.connect(DATABASE_PATH)
     c = conn.cursor()
-    c.execute("SELECT DISTINCT artist FROM album_watch")
-    watched_artists = [row[0] for row in c.fetchall()]
+    c.execute("SELECT DISTINCT artist, track_title FROM album_watch")
+    watched = [(row[0], row[1]) for row in c.fetchall()]
     conn.close()
 
-    if not watched_artists:
+    if not watched:
         return
 
-    log(f"Checking album watch for {len(watched_artists)} artists")
+    log(f"Checking album watch for {len(watched)} artists")
 
     TIDDL_PYTHON = os.getenv('TIDDL_PYTHON', str(Path.home() / ".local/share/pipx/venvs/tiddl/bin/python"))
     found_count = 0
 
-    for artist in watched_artists:
+    for artist, watched_single in watched:
         code = '''
 from tiddl.api import TidalApi
 from tiddl.config import Config
@@ -526,7 +554,7 @@ try:
 except Exception as e:
     print(f"API_ERROR: {e}", file=sys.stderr)
     sys.exit(2)
-for a in results.items[:15]:
+for a in results.items[:50]:
     print(f"{a.id}|{a.title}|{a.numberOfTracks}")
 '''
         result2 = subprocess.run([TIDDL_PYTHON, "-c", code2], capture_output=True, text=True, timeout=15)
@@ -545,14 +573,21 @@ for a in results.items[:15]:
             if owned:
                 continue
 
+            # Verify the watched single is actually on this album
+            if watched_single:
+                single_on_album = check_single_on_album(album_id, watched_single)
+                if not single_on_album:
+                    log(f"  Skipping {album_title} — watched single '{watched_single}' not on this album")
+                    continue
+
             log(f"Watch found new album: {artist} - {album_title} ({track_count} tracks)")
             success, error_type = download_album(artist, album_title, checker)
             if success:
                 found_count += 1
                 notify('Watch Album Downloaded', f'{artist} - {album_title} (full album)', 'headphones,star')
-                # Remove from watch now that we have a full album
+                # Remove only the matched watch entry, not all entries for this artist
                 conn2 = sqlite3.connect(DATABASE_PATH)
-                conn2.execute("DELETE FROM album_watch WHERE artist = ?", (artist,))
+                conn2.execute("DELETE FROM album_watch WHERE artist = ? AND track_title = ?", (artist, watched_single))
                 conn2.commit()
                 conn2.close()
                 log(f"Removed {artist} from album watch")
