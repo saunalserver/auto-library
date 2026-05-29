@@ -542,8 +542,6 @@ def main() -> int:
                 watched_artists.append(artist_name)
             library.record_download(artist_name, album_name)
             time.sleep(3)
-            library.record_download(artist_name, album_name)
-            time.sleep(3)
         else:
             not_found_count += 1
             reason = "not on Tidal" if status == "not_found" else "download failed"
