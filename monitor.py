@@ -53,8 +53,51 @@ def normalize(text):
         return ""
     return re.sub(r"\s+", " ", text.strip().lower())
 
+def get_token_expiry():
+    """Read token expiry time from tiddl config."""
+    config_paths = [Path.home() / "tiddl.json", Path.home() / ".config" / "tiddl" / "config.json"]
+    for path in config_paths:
+        if path.exists():
+            try:
+                with open(path) as f:
+                    cfg = json.load(f)
+                return cfg.get("auth", {}).get("expires")
+            except Exception:
+                pass
+    return None
+
+def try_refresh_token():
+    """Attempt to refresh the tiddl auth token non-interactively."""
+    try:
+        result = subprocess.run(
+            [TIDDL_BINARY, "auth", "refresh"],
+            capture_output=True, text=True, timeout=30
+        )
+        if result.returncode == 0 or "Refreshed" in result.stdout:
+            log("Token refreshed successfully")
+            return True
+        log(f"Token refresh failed: {result.stdout.strip()} {result.stderr.strip()}", "WARNING")
+        return False
+    except Exception as e:
+        log(f"Token refresh error: {e}", "WARNING")
+        return False
+
 def check_tiddl_auth():
-    """Check if tiddl is authenticated by making an actual API call."""
+    """Check tiddl auth with proactive refresh and auto-recovery."""
+    # Proactive refresh: refresh if token expires within 24 hours
+    expiry = get_token_expiry()
+    if expiry and time.time() > expiry - 86400:
+        remaining_hours = max(0, (expiry - time.time()) / 3600)
+        log(f"Token expires in {remaining_hours:.1f} hours — refreshing proactively")
+        if try_refresh_token():
+            # Verify the new token works
+            expiry = get_token_expiry()
+            if expiry:
+                log(f"New token valid until {datetime.fromtimestamp(expiry).strftime('%Y-%m-%d %H:%M')}")
+        else:
+            log("Proactive refresh failed, will retry on next run", "WARNING")
+
+    # Actual auth check via API call
     TIDDL_PYTHON = os.getenv('TIDDL_PYTHON', str(Path.home() / ".local/share/pipx/venvs/tiddl/bin/python"))
     code = '''
 from tiddl.api import TidalApi
@@ -76,7 +119,19 @@ except Exception as e:
             return True, None
         error = result.stdout.strip() + " " + result.stderr.strip()
         if "401" in error or "expired" in error.lower() or "login" in error.lower():
-            return False, f"Auth expired or invalid: {error[:200]}"
+            # Auto-recovery: try refreshing on auth failure
+            log("Auth expired — attempting auto-refresh", "WARNING")
+            if try_refresh_token():
+                # Re-check after refresh
+                result2 = subprocess.run(
+                    [TIDDL_PYTHON, "-c", code],
+                    capture_output=True, text=True, timeout=15
+                )
+                if "OK" in result2.stdout:
+                    log("Auth restored via auto-refresh")
+                    return True, None
+                error = result2.stdout.strip() + " " + result2.stderr.strip()
+            return False, f"Auth expired, auto-refresh failed: {error[:200]}"
         return False, f"Auth check failed: {error[:200]}"
     except subprocess.TimeoutExpired:
         return False, "Auth check timed out"
