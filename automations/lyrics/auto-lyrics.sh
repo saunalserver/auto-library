@@ -2,9 +2,22 @@
 # Auto-fetch lyrics for tracks missing .lrc files
 
 SCRIPT_DIR="$(dirname "$0")"
-LOGFILE="/home/saunalserver/projects/tidal_auto_monitor/logs/lyrics.log"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+LOGFILE="${PROJECT_ROOT}/logs/lyrics.log"
 LIMIT="${1:-50}"
 DELAY=1
+
+# Load secrets from .env
+if [ -f "${PROJECT_ROOT}/.env" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . "${PROJECT_ROOT}/.env"
+    set +a
+fi
+
+SUBSONIC_USER="${SUBSONIC_USER:-saunalserver}"
+SUBSONIC_PASS="${SUBSONIC_PASS:-}"
+SUBSONIC_URL="${SUBSONIC_URL:-http://localhost:4534}"
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOGFILE"
@@ -40,6 +53,6 @@ done
 log "Completed lyrics fetch"
 
 # Trigger Navidrome rescan
-curl -s 'http://localhost:4534/rest/startScan?u=saunalserver&p=***REMOVED:SUBSONIC_PASS***&v=1.16.1&c=auto-lyrics&f=json' > /dev/null 2>&1
+curl -s "${SUBSONIC_URL}/rest/startScan?u=${SUBSONIC_USER}&p=${SUBSONIC_PASS}&v=1.16.1&c=auto-lyrics&f=json" > /dev/null 2>&1
 
 echo '{"status":"completed"}'

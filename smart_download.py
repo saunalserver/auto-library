@@ -221,8 +221,15 @@ def find_best_album_match(artist_name, album_name, min_tracks=2):
                     print(f"  Best name-matched album: {best_alt['title']} ({best_alt['track_count']} tracks)")
                     return best_alt["id"], best_alt["title"], track["artist"], best_alt["track_count"]
 
-            # Fall back to the track's actual parent album
-            return track["album_id"], track["album_title"], track["artist"], -1
+            # Fall back to the track's parent album ONLY if its name actually
+            # matches what we searched for. Otherwise we risk downloading an
+            # unrelated compilation (e.g. searching "Hey Baby" and grabbing
+            # the artist's "At Play" compilation that the single appears on).
+            parent_sim = similarity(track["album_title"], album_name)
+            if parent_sim >= 0.5:
+                print(f"  Falling back to track's parent album: {track['album_title']} (sim={parent_sim:.0%})")
+                return track["album_id"], track["album_title"], track["artist"], -1
+            print(f"  Rejecting parent album fallback: '{track['album_title']}' vs '{album_name}' (sim={parent_sim:.0%})")
 
     # If we had a weak album match from strategies 1-3, return it as last resort
     if best_match:
@@ -243,7 +250,13 @@ def main():
     print(f"Looking for: {artist} - {album} (min {min_tracks} tracks)")
     print("-" * 50)
 
-    album_id, found_title, found_artist, track_count = find_best_album_match(artist, album, min_tracks)
+    try:
+        album_id, found_title, found_artist, track_count = find_best_album_match(artist, album, min_tracks)
+    except ApiError as exc:
+        # Propagate auth/API errors cleanly so the parent monitor can detect
+        # them via stderr grep instead of relying on traceback output.
+        print(f"API_ERROR: {exc}", file=sys.stderr)
+        sys.exit(2)
 
     if not album_id:
         print(f"ERROR: Could not find matching album for {artist} - {album}")
