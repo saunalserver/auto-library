@@ -84,11 +84,15 @@ def try_refresh_token():
 
 def check_tiddl_auth():
     """Check tiddl auth with proactive refresh and auto-recovery."""
-    # Proactive refresh: refresh if token expires within 24 hours
+    # Refresh whenever the token is within 24h of expiry. Tidal tokens are
+    # short-lived enough that this typically fires every run.
     expiry = get_token_expiry()
     if expiry and time.time() > expiry - 86400:
-        remaining_hours = max(0, (expiry - time.time()) / 3600)
-        log(f"Token expires in {remaining_hours:.1f} hours — refreshing proactively")
+        remaining_hours = (expiry - time.time()) / 3600
+        if remaining_hours <= 0:
+            log("Token expired — refreshing")
+        else:
+            log(f"Token expires in {remaining_hours:.1f} hours — refreshing")
         if try_refresh_token():
             # Verify the new token works
             expiry = get_token_expiry()
@@ -157,7 +161,14 @@ def init_database():
                   last_error TEXT, UNIQUE(artist, album))''')
     c.execute('''CREATE TABLE IF NOT EXISTS album_watch
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, artist TEXT, track_title TEXT,
-                  added TIMESTAMP, source TEXT, UNIQUE(artist, track_title))''')
+                  added TIMESTAMP, source TEXT, check_count INTEGER DEFAULT 0,
+                  UNIQUE(artist, track_title))''')
+    # Migrate existing album_watch tables: add check_count if missing.
+    c.execute("PRAGMA table_info(album_watch)")
+    columns = [row[1] for row in c.fetchall()]
+    if 'check_count' not in columns:
+        c.execute("ALTER TABLE album_watch ADD COLUMN check_count INTEGER DEFAULT 0")
+        log('Migrated album_watch: added check_count column')
     conn.commit()
     conn.close()
     log('Database initialized')
@@ -552,16 +563,32 @@ except Exception as e:
 
 def check_album_watch(checker):
     """Check watched artists for new full albums. Singles from Pitchfork/etc get replaced."""
+    # Give up after this many checks — avoids burning API calls forever on
+    # stale watches. At 4 runs/day this is ~1 week.
+    MAX_CHECK_COUNT = 28
+
     conn = sqlite3.connect(DATABASE_PATH)
     c = conn.cursor()
-    c.execute("SELECT DISTINCT artist, track_title FROM album_watch")
+    # Bump check_count for everything we're about to look at, then only
+    # return entries that haven't exceeded the cap.
+    c.execute("UPDATE album_watch SET check_count = check_count + 1")
+    c.execute(
+        "SELECT DISTINCT artist, track_title FROM album_watch WHERE check_count <= ?",
+        (MAX_CHECK_COUNT,),
+    )
     watched = [(row[0], row[1]) for row in c.fetchall()]
+    # Also report how many we skipped so it's visible in logs.
+    c.execute("SELECT COUNT(*) FROM album_watch WHERE check_count > ?", (MAX_CHECK_COUNT,))
+    skipped = c.fetchone()[0]
+    conn.commit()
     conn.close()
 
     if not watched:
+        if skipped:
+            log(f"Album watch: {skipped} entries past check cap ({MAX_CHECK_COUNT}), skipping")
         return
 
-    log(f"Checking album watch for {len(watched)} artists")
+    log(f"Checking album watch for {len(watched)} artists{f' ({skipped} skipped past cap)' if skipped else ''}")
 
     TIDDL_PYTHON = os.getenv('TIDDL_PYTHON', str(Path.home() / ".local/share/pipx/venvs/tiddl/bin/python"))
     found_count = 0

@@ -23,13 +23,19 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv(PROJECT_ROOT / ".env")
+except ImportError:
+    pass
+
 NTFY_URL = "http://localhost:8093/music"
 PITCHFORK_RSS = "https://pitchfork.com/feed/rss"
 PITCHFORK_NEWS = "https://pitchfork.com/news/"
 
-SUBSONIC_URL = "http://localhost:4534"
-SUBSONIC_USER = "saunalserver"
-SUBSONIC_PASS = "***REMOVED:SUBSONIC_PASS***"
+SUBSONIC_URL = os.getenv("SUBSONIC_URL", "http://localhost:4534")
+SUBSONIC_USER = os.getenv("SUBSONIC_USER", "saunalserver")
+SUBSONIC_PASS = os.getenv("SUBSONIC_PASS", "")
 SUBSONIC_CLIENT = "pitchfork-selects"
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -47,9 +53,13 @@ def setup_logger() -> logging.Logger:
     logger.handlers.clear()
     logger.setLevel(logging.INFO)
     fmt = logging.Formatter("[%(asctime)s] %(levelname)s: %(message)s")
-    fh = logging.FileHandler(log_dir / "pitchfork_selects.log")
-    fh.setFormatter(fmt)
-    logger.addHandler(fh)
+    # Only attach a FileHandler when not running under systemd — systemd
+    # already captures stdout into the same log file, so attaching both
+    # handlers duplicates every line.
+    if not os.environ.get("INVOCATION_ID"):
+        fh = logging.FileHandler(log_dir / "pitchfork_selects.log")
+        fh.setFormatter(fmt)
+        logger.addHandler(fh)
     sh = logging.StreamHandler(sys.stdout)
     sh.setFormatter(fmt)
     logger.addHandler(sh)
@@ -182,6 +192,19 @@ def fetch_and_parse_article(url: str, logger: logging.Logger) -> List[P4kTrack]:
     logger.info("Parsed %d tracks from article", len(tracks))
     for t in tracks:
         logger.info("  %s: %s", t.artist, t.title)
+
+    # If we got nothing, dump the raw HTML so the regex can be debugged.
+    # Pitchfork tweaks their CMS occasionally and breaks this parser; the
+    # dump makes the failure actionable instead of silent.
+    if not tracks:
+        log_dir = PROJECT_ROOT / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        dump_path = log_dir / f"pitchfork_article_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+        try:
+            dump_path.write_text(html, encoding="utf-8")
+            logger.warning("No tracks parsed — raw article dumped to %s", dump_path)
+        except Exception as exc:
+            logger.warning("Could not dump raw article: %s", exc)
 
     return tracks
 

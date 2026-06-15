@@ -22,6 +22,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Set, Tuple
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+except ImportError:
+    pass
+
 LASTFM_API_URL = "http://ws.audioscrobbler.com/2.0/"
 NTFY_URL = "http://localhost:8093/music"
 
@@ -412,9 +418,13 @@ def setup_logger(log_file: Path) -> logging.Logger:
     logger.handlers.clear()
     logger.setLevel(logging.INFO)
     formatter = logging.Formatter("[%(asctime)s] %(levelname)s: %(message)s")
-    fh = logging.FileHandler(log_file)
-    fh.setFormatter(formatter)
-    logger.addHandler(fh)
+    # Only attach a FileHandler when not running under systemd — systemd
+    # already captures stdout into the same log file, so attaching both
+    # handlers duplicates every line.
+    if not os.environ.get("INVOCATION_ID"):
+        fh = logging.FileHandler(log_file)
+        fh.setFormatter(formatter)
+        logger.addHandler(fh)
     sh = logging.StreamHandler(sys.stdout)
     sh.setFormatter(formatter)
     logger.addHandler(sh)
@@ -434,8 +444,8 @@ def load_config(args: argparse.Namespace) -> dict:
     project_root = Path(__file__).resolve().parent.parent
     env = os.environ
     config = {
-        "lastfm_api_key": env.get("LASTFM_API_KEY", "***REMOVED:LASTFM_API_KEY***"),
-        "lastfm_user": env.get("LASTFM_USER", "Shlaghetto"),
+        "lastfm_api_key": env.get("LASTFM_API_KEY", ""),
+        "lastfm_user": env.get("LASTFM_USER", env.get("LASTFM_USERNAME", "")),
         "rate_limit": float(env.get("LASTFM_RATE_LIMIT", "1.0")),
         "music_root": Path(env.get("MUSIC_ROOT", "/mnt/photos/flac_music")),
         "monitor_db": Path(env.get("MONITOR_DB", str(project_root / "database" / "monitor.db"))),
