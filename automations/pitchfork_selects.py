@@ -23,6 +23,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 try:
     from dotenv import load_dotenv
     load_dotenv(PROJECT_ROOT / ".env")
@@ -37,8 +39,6 @@ SUBSONIC_URL = os.getenv("SUBSONIC_URL", "http://localhost:4534")
 SUBSONIC_USER = os.getenv("SUBSONIC_USER", "saunalserver")
 SUBSONIC_PASS = os.getenv("SUBSONIC_PASS", "")
 SUBSONIC_CLIENT = "pitchfork-selects"
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MUSIC_ROOT = Path(os.getenv("MUSIC_ROOT", "/mnt/photos/flac_music"))
 MONITOR_DB = PROJECT_ROOT / "database" / "monitor.db"
 SMART_DOWNLOAD = PROJECT_ROOT / "smart_download.py"
@@ -312,6 +312,26 @@ TIDDL_PYTHON = "/home/saunalserver/.local/share/pipx/venvs/tiddl/bin/python3"
 TIDDL_BIN = str(Path.home() / ".local/bin/tiddl")
 
 
+def refresh_tidal_token(logger: logging.Logger) -> bool:
+    """Best-effort proactive Tidal token refresh before any API use."""
+    try:
+        result = subprocess.run(
+            [TIDDL_BIN, "auth", "refresh"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0:
+            logger.info("Tidal token refresh: OK")
+            return True
+        logger.warning(
+            "Tidal token refresh failed (exit %s): %s",
+            result.returncode, (result.stderr or result.stdout).strip()[:200],
+        )
+        return False
+    except Exception as exc:
+        logger.warning("Tidal token refresh error: %s", exc)
+        return False
+
+
 def search_tidal_track(artist: str, title: str, logger: logging.Logger) -> Optional[Tuple[str, str, str]]:
     """Search Tidal for a track and return (album_id, album_name, artist_name) or None."""
     query = f"{artist} {title}"
@@ -508,6 +528,8 @@ def main() -> int:
     logger.info("=" * 60)
     logger.info("Pitchfork Selects automation started")
     logger.info("=" * 60)
+
+    refresh_tidal_token(logger)
 
     # 1. Find the latest Selects article
     article_url = find_selects_url(logger)
