@@ -30,6 +30,33 @@ except ImportError:
 
 LASTFM_API_URL = "http://ws.audioscrobbler.com/2.0/"
 NTFY_URL = "http://localhost:8093/music"
+TIDDL_BIN = str(Path.home() / ".local/bin/tiddl")
+
+
+def refresh_tidal_token(logger: logging.Logger) -> bool:
+    """Best-effort proactive Tidal token refresh.
+
+    Why: discovery runs at 07:00 on Sunday, monitor runs every 6h. If the
+    token expired between the last monitor run and discovery, every album
+    fails with auth_expired. Refreshing here avoids the 10/10 failure we
+    saw on 2026-07-19.
+    """
+    try:
+        result = subprocess.run(
+            [TIDDL_BIN, "auth", "refresh"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0:
+            logger.info("Tidal token refresh: OK")
+            return True
+        logger.warning(
+            "Tidal token refresh failed (exit %s): %s",
+            result.returncode, (result.stderr or result.stdout).strip()[:200],
+        )
+        return False
+    except Exception as exc:
+        logger.warning("Tidal token refresh error: %s", exc)
+        return False
 
 
 def normalize(text: str) -> str:
@@ -525,6 +552,7 @@ def main() -> int:
         notify("Discovery Report", f"Found {len(selection)} candidate albums (dry-run)", "mag")
         return 0
 
+    refresh_tidal_token(logger)
     success, failure, succeeded, failed = run_downloads(selection, config["smart_download"], ownership, logger)
     logger.info("Downloads complete: %d success, %d failed", success, failure)
 
