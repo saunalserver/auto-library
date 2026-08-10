@@ -95,3 +95,58 @@ def test_unprotect_removes_row(populated_db, tmp_path):
     cur = conn.execute("SELECT COUNT(*) FROM dedup_protections WHERE filepath = ?",
                        (str(real.resolve()),))
     assert cur.fetchone()[0] == 0
+
+
+def test_trash_moves_to_trash_dir(populated_db, tmp_path, monkeypatch):
+    # Create the actual file so trash can move it
+    src = Path("/tmp/test_dedup_src.flac")
+    src.parent.mkdir(exist_ok=True)
+    src.write_bytes(b"fake audio")
+    # Update finding to point at our real file
+    conn = sqlite3.connect(populated_db)
+    conn.execute("UPDATE dedup_findings SET filepath=? WHERE filepath=?",
+                 (str(src), "/music/A/Album/track.flac"))
+    conn.commit()
+    conn.close()
+
+    trash_root = tmp_path / "trash"
+    dedup_tool.main(["trash", "--db", populated_db, str(src),
+                     "--trash-root", str(trash_root)])
+    assert not src.exists()  # moved out of source
+    # Somewhere under trash_root the file exists
+    trashed = list(trash_root.rglob("test_dedup_src.flac"))
+    assert len(trashed) == 1
+    assert trashed[0].read_bytes() == b"fake audio"
+
+
+def test_trash_refuses_protected(populated_db, tmp_path):
+    src = Path("/tmp/test_dedup_src2.flac")
+    src.write_bytes(b"x")
+    conn = sqlite3.connect(populated_db)
+    conn.execute("UPDATE dedup_findings SET filepath=? WHERE filepath=?",
+                 (str(src), "/music/A/Album/track.flac"))
+    conn.execute("INSERT INTO dedup_protections (filepath, reason, added_at, added_by) "
+                 "VALUES (?, 'test', datetime('now'), 'test')", (str(src),))
+    conn.commit()
+    conn.close()
+
+    rc = dedup_tool.main(["trash", "--db", populated_db, str(src),
+                          "--trash-root", str(tmp_path / "trash")])
+    assert rc != 0
+    assert src.exists()  # not moved
+
+
+def test_restore_reverses_trash(populated_db, tmp_path):
+    src = Path("/tmp/test_dedup_restore.flac")
+    src.write_bytes(b"restore me")
+    original_bytes = src.read_bytes()
+    trash_root = tmp_path / "trash"
+
+    dedup_tool.main(["trash", "--db", populated_db, str(src),
+                     "--trash-root", str(trash_root)])
+    assert not src.exists()
+
+    dedup_tool.main(["restore", "--db", populated_db, str(src),
+                     "--trash-root", str(trash_root)])
+    assert src.exists()
+    assert src.read_bytes() == original_bytes
