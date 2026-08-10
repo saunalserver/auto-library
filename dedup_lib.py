@@ -38,7 +38,12 @@ def fingerprint_file(path: Path) -> FingerprintResult:
     if proc.returncode != 0:
         raise RuntimeError(f"fpcalc failed on {path}: {proc.stderr[:200]}")
     data = json.loads(proc.stdout)
-    raw_bytes = base64.b64decode(data["fingerprint"])
+    # fpcalc emits URL-safe base64 (- and _ instead of + and /) and omits
+    # padding for variable-length fingerprints. Translate to standard alphabet
+    # and pad before decode.
+    fp_b64 = data["fingerprint"].translate(str.maketrans("-_", "+/"))
+    fp_b64 += "=" * (-len(fp_b64) % 4)
+    raw_bytes = base64.b64decode(fp_b64)
     # Chromaprint base64 output is prefixed with a single format/version byte
     # (0x01). Strip it so the remaining buffer is 4-byte-aligned for unpacking
     # into int32s. Truncate any trailing partial int defensively.
