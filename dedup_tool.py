@@ -15,6 +15,8 @@ from datetime import datetime
 from pathlib import Path
 
 from dedup_lib import init_dedup_schema
+import dedup_scan
+import dedup_state
 
 DEFAULT_DB = "database/monitor.db"
 
@@ -29,6 +31,15 @@ def _connect(db_path: str) -> sqlite3.Connection:
 def _add_db_arg(p):
     p.add_argument("--db", default=DEFAULT_DB,
                    help="Path to monitor.db (default: database/monitor.db)")
+
+
+def cmd_scan(args) -> int:
+    conn = _connect(args.db)
+    n = dedup_scan.scan_library(conn, Path(args.root))
+    findings = dedup_state.compare_library(conn)
+    print(f"Scanned {n} files, {findings} new findings")
+    conn.close()
+    return 0
 
 
 def cmd_report(args) -> int:
@@ -66,6 +77,11 @@ def cmd_report(args) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="dedup_tool")
     sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p_scan = sub.add_parser("scan", help="Fingerprint library + run comparison")
+    _add_db_arg(p_scan)
+    p_scan.add_argument("--root", default="/mnt/photos/flac_music")
+    p_scan.set_defaults(func=cmd_scan)
 
     p_report = sub.add_parser("report", help="Print dedup findings")
     _add_db_arg(p_report)
