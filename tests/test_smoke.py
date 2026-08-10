@@ -97,6 +97,74 @@ def test_smart_download_normalize_handles_unicode():
     assert normalize("Kaaris") == normalize("KAARIS")
 
 
+def test_check_tiddl_patch_detects_missing_kwargs_patch():
+    """check_tiddl_patch() must detect when tiddl's exceptions.py lost its **_ patch.
+
+    Regression guard: tiddl 2.8.0 (and 3.x upstream — issue #351 closed wontfix)
+    has rigid ApiError/AuthError constructors that crash with TypeError when
+    api.py does `raise ApiError(**data)` and Tidal's response includes extra
+    keys like `timestamp` or `path`, OR omits expected keys (e.g. returns
+    just {"status": 404}). The crash is swallowed per-track and albums
+    silently download incomplete (e.g. 11-track album came back with 2
+    files). The **_ patch in exceptions.py fixes this; this test catches
+    if a pipx upgrade wipes it.
+    """
+    import monitor
+
+    assert monitor.check_tiddl_patch(), (
+        "tiddl exceptions.py **_ patch is missing. Downloads will be silently "
+        "corrupted. Re-apply patch per LESSONS.md 'tiddl exceptions.py patched'."
+    )
+
+
+def test_parse_expected_track_count_extracts_from_smart_download_output():
+    """parse_expected_track_count should pull N out of 'Best match: X - Y (N tracks)'."""
+    import monitor
+
+    # Real output from smart_download.py
+    output = """Searching for artist: Charli xcx
+  Found 5 albums in search results
+  Candidate: Charli xcx - Music, Fashion, Film (11 tracks)
+    Artist match: 100%, Album match: 100%
+Best match: Charli xcx - Music, Fashion, Film (11 tracks)
+Downloading...
+"""
+    assert monitor.parse_expected_track_count(output) == 11
+
+    # Single-track edge case
+    assert monitor.parse_expected_track_count("Best match: X - Y (1 tracks)") == 1
+    # Grammar variant
+    assert monitor.parse_expected_track_count("Best match: X - Y (1 track)") == 1
+
+    # No Best match line → None
+    assert monitor.parse_expected_track_count("Searching...\nNotFound") is None
+    # Best match line without track count → None
+    assert monitor.parse_expected_track_count("Best match: X - Y") is None
+
+
+def test_count_local_audio_files_matches_case_insensitively():
+    """count_local_audio_files should match artist/album folders ignoring case.
+
+    Regression guard for the casing-split bug where Tidal returns 'Charli xcx'
+    vs 'Charli XCX' depending on endpoint, causing same artist's albums to
+    land in differently-cased folders. The counter must find files in either.
+    """
+    import monitor
+
+    # Real album in the user's library (recently re-downloaded, has 11 .flac)
+    count = monitor.count_local_audio_files("Charli XCX", "Music, Fashion, Film")
+    assert count == 11, f"Expected 11 (post-re-download), got {count}"
+
+    # Case-insensitive artist match
+    assert monitor.count_local_audio_files("charli xcx", "Music, Fashion, Film") == 11
+    assert monitor.count_local_audio_files("CHARLI XCX", "music, fashion, film") == 11
+
+    # Nonexistent album → 0
+    assert monitor.count_local_audio_files("Charli XCX", "Definitely Not Real Album") == 0
+    # Nonexistent artist → 0
+    assert monitor.count_local_audio_files("Nobody Has This Name", "Anything") == 0
+
+
 def _parse_article_html_helper():
     """Expose the inline parser for testing without a network fetch.
 
