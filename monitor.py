@@ -12,6 +12,16 @@ from datetime import datetime
 import urllib.request, urllib.parse
 from dotenv import load_dotenv
 
+try:
+    from dedup_lib import (
+        index_file, find_existing_fingerprints, fingerprint_file,
+        compare_fingerprints, FingerprintResult,
+    )
+    from dedup_lib import normalize as dedup_normalize
+    DEDUP_AVAILABLE = True
+except ImportError:
+    DEDUP_AVAILABLE = False
+
 load_dotenv()
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -53,6 +63,123 @@ def normalize(text):
         return ""
     return re.sub(r"\s+", " ", text.strip().lower())
 
+
+def parse_expected_track_count(combined_output):
+    """Extract the track count from smart_download's 'Best match' log line.
+
+    smart_download.py prints `Best match: {artist} - {album} ({N} tracks)` on
+    success. We use that N to compare against the actual files on disk so
+    partial downloads (where tiddl silently dropped tracks) get surfaced
+    instead of recorded as a clean success.
+    """
+    for line in combined_output.split('\n'):
+        match = re.search(r'Best match:.*\((\d+)\s*tracks?\)', line, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def count_local_audio_files(artist, album):
+    """Count .flac + .m4a files in any /<artist>/<album>/ folder (case-insensitive).
+
+    Returns total across all folder variants that match (handles casing
+    differences from Tidal metadata, e.g. 'Charli xcx' vs 'Charli XCX').
+    Does NOT match Deluxe/parenthetical variants — exact album name only.
+    """
+    if not MUSIC_ROOT.exists():
+        return 0
+    artist_n = normalize(artist)
+    album_n = normalize(album)
+    if not artist_n or not album_n:
+        return 0
+    total = 0
+    try:
+        for artist_dir in MUSIC_ROOT.iterdir():
+            if not artist_dir.is_dir():
+                continue
+            if normalize(artist_dir.name) != artist_n:
+                continue
+            for album_dir in artist_dir.iterdir():
+                if not album_dir.is_dir():
+                    continue
+                if normalize(album_dir.name) == album_n:
+                    audio = list(album_dir.glob("*.flac")) + list(album_dir.glob("*.m4a"))
+                    total += len(audio)
+    except Exception as e:
+        log(f"Error counting local audio files for {artist} - {album}: {e}", "WARNING")
+        return 0
+    return total
+
+
+def post_download_dedup_check(conn, artist, album):
+    """After a successful download, fingerprint new files and flag duplicates.
+
+    Inserts dedup_findings rows (status='protected') for any new file that
+    audio-matches an existing fingerprint. Safe to call repeatedly.
+    """
+    if not DEDUP_AVAILABLE:
+        return
+    import sqlite3 as _sqlite3
+    import uuid as _uuid
+    from base64 import b64decode
+    from struct import unpack
+    album_dir = MUSIC_ROOT / artist / album
+    if not album_dir.exists():
+        return
+    new_files = list(album_dir.glob("*.flac")) + list(album_dir.glob("*.m4a"))
+    suspect_dupes = []
+    for f in new_files:
+        try:
+            from mutagen import File as MutagenFile
+            tags = MutagenFile(str(f))
+            title = (tags.get('title', [''])[0] if tags and tags.get('title') else '') or f.stem
+            index_file(conn, f, artist, album, title)
+            n_artist, n_title = dedup_normalize(artist), dedup_normalize(title)
+            rows = find_existing_fingerprints(conn, n_artist, n_title)
+            new_fp = fingerprint_file(f)
+            for row in rows:
+                if Path(row['filepath']).resolve() == f.resolve():
+                    continue
+                # Reconstruct FingerprintResult from the stored base64. The
+                # stored value uses URL-safe base64 with a leading 0x01 format
+                # byte that must be stripped before 4-byte-aligned unpacking
+                # (mirrors fingerprint_file in dedup_lib).
+                raw = b64decode(
+                    row['fingerprint'].translate(str.maketrans('-_', '+/'))
+                    + '=' * (-len(row['fingerprint']) % 4)
+                )
+                if raw and raw[0] == 0x01:
+                    raw = raw[1:]
+                n_ints = len(raw) // 4
+                row_fp = FingerprintResult(
+                    duration_ms=row['duration_ms'],
+                    fingerprint_b64=row['fingerprint'],
+                    fingerprint_version=row['fingerprint_version'],
+                    raw_ints=unpack(f'>{n_ints}i', raw[:n_ints * 4]),
+                )
+                sim = compare_fingerprints(new_fp, row_fp)
+                if sim >= 0.95:
+                    group_id = str(_uuid.uuid4())
+                    try:
+                        conn.execute("""
+                            INSERT INTO dedup_findings
+                                (group_id, filepath, artist, album, title, similarity,
+                                 matched_path, status, size_bytes, added_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, 'protected', ?, datetime('now'))
+                        """, (group_id, str(f), artist, album, title, sim,
+                              row['filepath'], f.stat().st_size))
+                        suspect_dupes.append((str(f), row['filepath'], sim))
+                    except _sqlite3.IntegrityError:
+                        pass  # duplicate (group_id, filepath) — already flagged
+        except Exception as e:
+            log(f'Post-download fingerprint failed for {f}: {e}', 'WARNING')
+    conn.commit()
+    if suspect_dupes:
+        msg = f'{artist} - {album}: {len(suspect_dupes)} tracks already exist elsewhere'
+        log(f'DUPLICATE DETECTED: {msg}', 'WARNING')
+        notify('Duplicate Downloaded', msg, tags='warning,duplicate', priority='high')
+    return len(suspect_dupes)
+
 def get_token_expiry():
     """Read token expiry time from tiddl config."""
     config_paths = [Path.home() / "tiddl.json", Path.home() / ".config" / "tiddl" / "config.json"]
@@ -81,6 +208,42 @@ def try_refresh_token():
     except Exception as e:
         log(f"Token refresh error: {e}", "WARNING")
         return False
+
+def check_tiddl_patch():
+    """Verify tiddl exceptions.py has the **_ patch applied.
+
+    tiddl's api.py does `raise ApiError(**data)` where data is the raw Tidal
+    response, but the upstream constructor only accepts (status, subStatus,
+    userMessage). Any extra key in the response (timestamp, path, ...) makes
+    the constructor raise TypeError — which tiddl's download loop swallows
+    per-track, silently leaving albums half-downloaded. Upstream marked this
+    wontfix (issue #351). We patch exceptions.py locally; this check catches
+    a missing patch (typically after a pipx upgrade) before it corrupts more
+    downloads.
+    """
+    TIDDL_PYTHON = os.getenv(
+        'TIDDL_PYTHON',
+        str(Path.home() / ".local/share/pipx/venvs/tiddl/bin/python"),
+    )
+    code = (
+        "from tiddl.exceptions import ApiError, AuthError\n"
+        "try:\n"
+        "    ApiError(status=404, subStatus='x', userMessage='y', extra='ignored')\n"
+        "    AuthError(status=401, error='x', sub_status='y', error_description='z', extra='ignored')\n"
+        "    print('OK')\n"
+        "except TypeError as e:\n"
+        "    print(f'FAIL: {e}')\n"
+    )
+    try:
+        result = subprocess.run(
+            [TIDDL_PYTHON, "-c", code],
+            capture_output=True, text=True, timeout=10
+        )
+        return "OK" in result.stdout
+    except Exception as e:
+        log(f"Could not verify tiddl patch: {e}", "WARNING")
+        return False
+
 
 def check_tiddl_auth():
     """Check tiddl auth with proactive refresh and auto-recovery."""
@@ -363,13 +526,26 @@ class LibraryChecker:
             pass
         return False
 
-    def record_download(self, artist, album):
+    def record_download(self, artist, album, file_count=None):
         key = (normalize(artist), normalize(album))
         self.downloaded_albums.add(key)
+        if file_count is None:
+            file_count = count_local_audio_files(artist, album)
         try:
             conn = sqlite3.connect(DATABASE_PATH)
             c = conn.cursor()
-            c.execute("INSERT OR IGNORE INTO downloaded_albums (artist, album, download_date, file_count) VALUES (?, ?, datetime('now'), 0)", (artist, album))
+            # Insert if missing (preserves UNIQUE constraint); always update
+            # file_count so the column reflects reality after each download.
+            c.execute(
+                "INSERT OR IGNORE INTO downloaded_albums (artist, album, download_date, file_count) "
+                "VALUES (?, ?, datetime('now'), ?)",
+                (artist, album, file_count),
+            )
+            c.execute(
+                "UPDATE downloaded_albums SET file_count = ? "
+                "WHERE LOWER(artist) = LOWER(?) AND LOWER(album) = LOWER(?)",
+                (file_count, artist, album),
+            )
             conn.commit()
             conn.close()
         except Exception as e:
@@ -400,9 +576,28 @@ def download_album(artist, album, checker, min_tracks=2):
             return False, "not_found"
         
         if result.returncode == 0 and 'Best match' in combined_output:
+            expected = parse_expected_track_count(combined_output)
+            actual = count_local_audio_files(artist, album)
             log(f'Successfully downloaded: {artist} - {album}', 'SUCCESS')
+            if expected is not None and actual < expected:
+                # Partial download — tiddl returned success but the disk has
+                # fewer audio files than Tidal advertised. Surface it loudly
+                # so silent corruption can't recur.
+                msg = f'{artist} - {album}: {actual}/{expected} tracks on disk'
+                log(f'PARTIAL DOWNLOAD DETECTED: {msg}', 'WARNING')
+                notify('Album Partial Download', msg, 'warning,arrow_down', 'high')
+            elif expected is not None:
+                log(f'Verified: {actual}/{expected} tracks on disk')
+            # Post-download dedup check: fingerprint new files, flag audio-identical
+            # matches against existing library. Safe no-op if dedup_lib missing.
+            try:
+                dedup_conn = sqlite3.connect(DATABASE_PATH)
+                post_download_dedup_check(dedup_conn, artist, album)
+                dedup_conn.close()
+            except Exception as e:
+                log(f'Dedup check failed (non-fatal): {e}', 'WARNING')
             notify('Album Downloaded', f'{artist} - {album}', 'headphones,arrow_down')
-            checker.record_download(artist, album)
+            checker.record_download(artist, album, file_count=actual)
             clear_failed_download(artist, album)
             return True, None
         
@@ -685,7 +880,23 @@ def main():
     log('TIDAL Auto-Monitor Started')
     log('='*60)
     init_database()
-    
+
+    # Verify tiddl patch BEFORE auth check — auth check itself can trigger
+    # the bug. If the patch is missing, every download is silently corrupt.
+    if not check_tiddl_patch():
+        log("TIDDL PATCH MISSING — downloads will be silently corrupted", "ERROR")
+        last_alert = get_last_auth_alert()
+        if time.time() - last_alert > 86400:
+            notify(
+                'TIDAL Patch Missing',
+                'tiddl exceptions.py **_ patch is gone (pipx upgrade?). '
+                'Albums will download incomplete. Re-apply per LESSONS.md.',
+                'warning,bug', 'urgent',
+            )
+            set_last_auth_alert(int(time.time()))
+    else:
+        log("tiddl exceptions.py patch verified OK")
+
     # Check tiddl auth first
     auth_ok, auth_error = check_tiddl_auth()
     if not auth_ok:
