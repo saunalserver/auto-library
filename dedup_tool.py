@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import argparse
 import json as jsonlib
+import re
 import shutil
 import sqlite3
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -112,6 +114,69 @@ def cmd_restore(args) -> int:
     conn.commit()
     conn.close()
     print(f"Restored: {found} → {src}")
+    return 0
+
+
+def _parse_duration(s: str) -> int:
+    """Parse '30d' / '12h' / '60m' to seconds."""
+    m = re.match(r"^(\d+)([dhm])$", s)
+    if not m:
+        raise ValueError(f"Bad duration: {s}")
+    n, unit = int(m.group(1)), m.group(2)
+    return n * {"d": 86400, "h": 3600, "m": 60}[unit]
+
+
+def cmd_purge(args) -> int:
+    if not args.yes:
+        print("ERROR: purge requires --yes (permanent delete)", file=sys.stderr)
+        return 1
+    # Extract day count for the min-7d guard (only relevant for 'd' inputs)
+    m = re.match(r"^(\d+)d$", args.older_than)
+    min_days = int(m.group(1)) if m else 0
+    if min_days and min_days < 7:
+        print(f"ERROR: --older-than must be at least 7d (got {args.older_than})", file=sys.stderr)
+        return 1
+
+    threshold_seconds = _parse_duration(args.older_than)
+    now = time.time()
+    trash_root = Path(args.trash_root).expanduser()
+    if not trash_root.exists():
+        print(f"Trash root does not exist: {trash_root}")
+        return 0
+
+    conn = _connect(args.db)
+    count = 0
+    for f in trash_root.rglob("*"):
+        if not f.is_file():
+            continue
+        if now - f.stat().st_mtime < threshold_seconds:
+            continue
+        # Refuse if protected
+        # Reconstruct original path: trash_root/<date>/<original-path>
+        # original path = everything after trash_root/<date>/
+        parts = f.relative_to(trash_root).parts
+        if len(parts) < 3:
+            original = "/" + "/".join(parts[1:])  # unusual layout
+        else:
+            original = "/" + "/".join(parts[2:])
+        prot = conn.execute("SELECT 1 FROM dedup_protections WHERE filepath = ?",
+                            (original,)).fetchone()
+        if prot:
+            print(f"SKIP (protected): {original}")
+            continue
+        f.unlink()
+        conn.execute(
+            "INSERT INTO dedup_log (filepath, action, when_at, actor, details) "
+            "VALUES (?, 'purge', datetime('now'), ?, NULL)",
+            (original, args.actor),
+        )
+        count += 1
+    conn.execute(
+        "UPDATE dedup_findings SET status='deleted' WHERE status='trash'"
+    )
+    conn.commit()
+    conn.close()
+    print(f"Purged {count} files from trash")
     return 0
 
 
@@ -232,6 +297,16 @@ def main(argv: list[str] | None = None) -> int:
     p_restore.add_argument("--trash-root", default="~/music-trash")
     p_restore.add_argument("--actor", default="user")
     p_restore.set_defaults(func=cmd_restore)
+
+    p_purge = sub.add_parser("purge", help="Permanently delete old trash")
+    _add_db_arg(p_purge)
+    p_purge.add_argument("--trash-root", default="~/music-trash")
+    p_purge.add_argument("--older-than", default="30d",
+                         help="Only purge files older than this (e.g. 30d, 12h, 60m)")
+    p_purge.add_argument("--yes", action="store_true",
+                         help="Required to actually delete (otherwise dry-run report)")
+    p_purge.add_argument("--actor", default="user")
+    p_purge.set_defaults(func=cmd_purge)
 
     p_unprotect = sub.add_parser("unprotect", help="Remove protection")
     _add_db_arg(p_unprotect)
