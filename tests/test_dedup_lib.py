@@ -29,3 +29,27 @@ def test_fingerprint_silence_and_sine_differ():
     silence = fingerprint_file(FIXTURES / "signal_a.flac")
     sine = fingerprint_file(FIXTURES / "signal_b.flac")
     assert silence.raw_ints != sine.raw_ints
+
+from dedup_lib import compare_fingerprints
+
+def test_compare_identical_returns_1():
+    fp = fingerprint_file(FIXTURES / "signal_a.flac")
+    assert compare_fingerprints(fp, fp) == 1.0
+
+def test_compare_silence_vs_sine_is_low():
+    silence = fingerprint_file(FIXTURES / "signal_a.flac")
+    sine = fingerprint_file(FIXTURES / "signal_b.flac")
+    sim = compare_fingerprints(silence, sine)
+    assert sim < 0.95, f"Expected low similarity, got {sim}"
+
+def test_compare_silence_vs_short_silence_rejects_on_duration():
+    # 10s vs 5s = 50% duration delta, exceeds 20% gate -> reject (returns 0.0)
+    silence = fingerprint_file(FIXTURES / "signal_a.flac")
+    short = fingerprint_file(FIXTURES / "signal_a_short.flac")
+    sim = compare_fingerprints(silence, short)
+    assert sim == 0.0
+
+def test_compare_is_symmetric():
+    silence = fingerprint_file(FIXTURES / "signal_a.flac")
+    sine = fingerprint_file(FIXTURES / "signal_b.flac")
+    assert abs(compare_fingerprints(silence, sine) - compare_fingerprints(sine, silence)) < 1e-9

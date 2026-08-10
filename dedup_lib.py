@@ -50,3 +50,43 @@ def fingerprint_file(path: Path) -> FingerprintResult:
         fingerprint_version=int(data.get("version", 2)),
         raw_ints=raw_ints,
     )
+
+
+def _popcount(x: int) -> int:
+    """Number of 1-bits in a 32-bit int."""
+    x = x - ((x >> 1) & 0x55555555)
+    x = (x & 0x33333333) + ((x >> 2) & 0x33333333)
+    x = (x + (x >> 4)) & 0x0F0F0F0F
+    return (x * 0x01010101) >> 24
+
+def _hamming_norm(a_ints: tuple[int, ...], b_ints: tuple[int, ...]) -> float:
+    """Average bit-error-rate across two equal-length int32 arrays."""
+    assert len(a_ints) == len(b_ints)
+    total_bits = 32 * len(a_ints)
+    diff_bits = sum(_popcount(a ^ b) for a, b in zip(a_ints, b_ints))
+    return diff_bits / total_bits
+
+def compare_fingerprints(a: FingerprintResult, b: FingerprintResult) -> float:
+    """Sliding-window similarity score in [0.0, 1.0].
+
+    Returns 0.0 if durations differ by >20% (different audio length).
+    Otherwise, slides the shorter fingerprint across the longer one and
+    returns 1 - min_offset_bit_error_rate.
+    """
+    a_len, b_len = len(a.raw_ints), len(b.raw_ints)
+    if a_len == 0 or b_len == 0:
+        return 0.0
+    # Duration reject gate (>20% length delta)
+    if abs(a_len - b_len) > 0.20 * max(a_len, b_len):
+        return 0.0
+    shorter = a.raw_ints if a_len <= b_len else b.raw_ints
+    longer = b.raw_ints if a_len <= b_len else a.raw_ints
+    m = len(shorter)
+    n = len(longer)
+    best = 1.0
+    for offset in range(0, n - m + 1):
+        window = longer[offset:offset + m]
+        ber = _hamming_norm(shorter, window)
+        if ber < best:
+            best = ber
+    return 1.0 - best
