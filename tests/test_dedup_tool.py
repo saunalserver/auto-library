@@ -150,3 +150,50 @@ def test_restore_reverses_trash(populated_db, tmp_path):
                      "--trash-root", str(trash_root)])
     assert src.exists()
     assert src.read_bytes() == original_bytes
+
+
+def test_purge_requires_yes_flag(populated_db, tmp_path, capsys):
+    trash_root = tmp_path / "trash"
+    trash_root.mkdir()
+    (trash_root / "old").mkdir()
+    old_file = trash_root / "old" / "x.flac"
+    old_file.write_bytes(b"x")
+    # Backdate mtime to 40 days ago
+    import os
+    old_time = old_file.stat().st_mtime - 40 * 86400
+    os.utime(old_file, (old_time, old_time))
+
+    rc = dedup_tool.main(["purge", "--db", populated_db,
+                          "--trash-root", str(trash_root), "--older-than", "30d"])
+    assert rc != 0
+    assert old_file.exists()  # not deleted without --yes
+
+
+def test_purge_with_yes_deletes_old(populated_db, tmp_path):
+    trash_root = tmp_path / "trash"
+    trash_root.mkdir()
+    (trash_root / "old").mkdir()
+    old_file = trash_root / "old" / "x.flac"
+    old_file.write_bytes(b"x")
+    import os
+    old_time = old_file.stat().st_mtime - 40 * 86400
+    os.utime(old_file, (old_time, old_time))
+
+    rc = dedup_tool.main(["purge", "--db", populated_db,
+                          "--trash-root", str(trash_root),
+                          "--older-than", "30d", "--yes"])
+    assert rc == 0
+    assert not old_file.exists()
+
+
+def test_purge_refuses_recent(populated_db, tmp_path):
+    trash_root = tmp_path / "trash"
+    trash_root.mkdir()
+    recent = trash_root / "y.flac"
+    recent.write_bytes(b"y")  # fresh mtime
+
+    rc = dedup_tool.main(["purge", "--db", populated_db,
+                          "--trash-root", str(trash_root),
+                          "--older-than", "30d", "--yes"])
+    assert rc == 0
+    assert recent.exists()  # too new, not purged
