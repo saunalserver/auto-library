@@ -33,6 +33,52 @@ def _add_db_arg(p):
                    help="Path to monitor.db (default: database/monitor.db)")
 
 
+def cmd_protect(args) -> int:
+    path = Path(args.filepath).resolve()
+    if not path.exists():
+        print(f"ERROR: path does not exist: {path}", file=sys.stderr)
+        return 1
+    conn = _connect(args.db)
+    conn.execute(
+        "INSERT OR REPLACE INTO dedup_protections (filepath, reason, added_at, added_by) "
+        "VALUES (?, ?, datetime('now'), ?)",
+        (str(path), args.reason or "(no reason given)", args.actor),
+    )
+    # Update any pending findings on this path
+    conn.execute(
+        "UPDATE dedup_findings SET status='protected' WHERE filepath = ? AND status='pending'",
+        (str(path),),
+    )
+    conn.execute(
+        "INSERT INTO dedup_log (filepath, action, when_at, actor, details) "
+        "VALUES (?, 'protect', datetime('now'), ?, ?)",
+        (str(path), args.actor, args.reason),
+    )
+    conn.commit()
+    conn.close()
+    print(f"Protected: {path}")
+    return 0
+
+
+def cmd_unprotect(args) -> int:
+    path = str(Path(args.filepath).resolve())
+    conn = _connect(args.db)
+    conn.execute("DELETE FROM dedup_protections WHERE filepath = ?", (path,))
+    conn.execute(
+        "UPDATE dedup_findings SET status='pending' WHERE filepath = ? AND status='protected'",
+        (path,),
+    )
+    conn.execute(
+        "INSERT INTO dedup_log (filepath, action, when_at, actor, details) "
+        "VALUES (?, 'unprotect', datetime('now'), ?, NULL)",
+        (path, args.actor),
+    )
+    conn.commit()
+    conn.close()
+    print(f"Unprotected: {path}")
+    return 0
+
+
 def cmd_scan(args) -> int:
     conn = _connect(args.db)
     n = dedup_scan.scan_library(conn, Path(args.root))
@@ -82,6 +128,19 @@ def main(argv: list[str] | None = None) -> int:
     _add_db_arg(p_scan)
     p_scan.add_argument("--root", default="/mnt/photos/flac_music")
     p_scan.set_defaults(func=cmd_scan)
+
+    p_protect = sub.add_parser("protect", help="Mark a file as never-to-delete")
+    _add_db_arg(p_protect)
+    p_protect.add_argument("filepath")
+    p_protect.add_argument("reason", nargs="?")
+    p_protect.add_argument("--actor", default="user")
+    p_protect.set_defaults(func=cmd_protect)
+
+    p_unprotect = sub.add_parser("unprotect", help="Remove protection")
+    _add_db_arg(p_unprotect)
+    p_unprotect.add_argument("filepath")
+    p_unprotect.add_argument("--actor", default="user")
+    p_unprotect.set_defaults(func=cmd_unprotect)
 
     p_report = sub.add_parser("report", help="Print dedup findings")
     _add_db_arg(p_report)

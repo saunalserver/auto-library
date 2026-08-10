@@ -64,3 +64,34 @@ def test_scan_chains_index_and_compare(tmp_path, monkeypatch):
     conn = sqlite3.connect(db)
     cur = conn.execute("SELECT COUNT(*) FROM dedup_findings")
     assert cur.fetchone()[0] >= 1
+
+
+def test_protect_adds_row(populated_db, tmp_path):
+    # cmd_protect refuses non-existent paths, so create a real file.
+    real = tmp_path / "track.flac"
+    real.write_bytes(b"x")
+    dedup_tool.main(["protect", "--db", populated_db,
+                     str(real), "original album rip"])
+    conn = sqlite3.connect(populated_db)
+    cur = conn.execute("SELECT reason FROM dedup_protections WHERE filepath = ?",
+                       (str(real.resolve()),))
+    row = cur.fetchone()
+    assert row is not None
+    assert "original album rip" in row[0]
+
+def test_protect_refuses_nonexistent_path(populated_db, capsys):
+    rc = dedup_tool.main(["protect", "--db", populated_db,
+                          "/does/not/exist.flac", "x"])
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "does not exist" in err.lower() or "not found" in err.lower()
+
+def test_unprotect_removes_row(populated_db, tmp_path):
+    real = tmp_path / "track.flac"
+    real.write_bytes(b"x")
+    dedup_tool.main(["protect", "--db", populated_db, str(real), "x"])
+    dedup_tool.main(["unprotect", "--db", populated_db, str(real)])
+    conn = sqlite3.connect(populated_db)
+    cur = conn.execute("SELECT COUNT(*) FROM dedup_protections WHERE filepath = ?",
+                       (str(real.resolve()),))
+    assert cur.fetchone()[0] == 0
