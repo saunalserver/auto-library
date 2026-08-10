@@ -44,3 +44,23 @@ def test_report_json_outputs_valid_json(populated_db, capsys):
     data = json.loads(out)
     assert isinstance(data, list)
     assert len(data) == 2
+
+
+def test_scan_chains_index_and_compare(tmp_path, monkeypatch):
+    # Build a fake library — two audio-identical files (same sine args) so
+    # chromaprint produces a non-empty matching fingerprint.
+    root = tmp_path / "music"
+    root.mkdir()
+    import subprocess
+    for path in [root / "A" / "X" / "t.flac", root / "A" / "Y" / "t.flac"]:
+        path.parent.mkdir(parents=True)
+        subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i",
+                        "sine=frequency=440:duration=5", "-t", "5", str(path)],
+                       check=True, capture_output=True)
+
+    db = str(tmp_path / "test.db")
+    dedup_tool.main(["scan", "--db", db, "--root", str(root)])
+
+    conn = sqlite3.connect(db)
+    cur = conn.execute("SELECT COUNT(*) FROM dedup_findings")
+    assert cur.fetchone()[0] >= 1
