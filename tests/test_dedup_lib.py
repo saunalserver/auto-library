@@ -53,3 +53,18 @@ def test_compare_is_symmetric():
     silence = fingerprint_file(FIXTURES / "signal_a.flac")
     sine = fingerprint_file(FIXTURES / "signal_b.flac")
     assert abs(compare_fingerprints(silence, sine) - compare_fingerprints(sine, silence)) < 1e-9
+
+from dedup_lib import normalize
+
+def test_normalize_jay_z_variants_collapse():
+    assert normalize("JAY-Z") == normalize("JAY Z")
+    assert normalize("Charli XCX") == normalize("Charli xcx")
+
+def test_normalize_strips_parentheticals():
+    # "360 (feat. Robyn)" -> "360" so it matches album track "360"
+    assert normalize("360 (feat. Robyn)") == normalize("360")
+    assert normalize("Track [Radio Edit]") == normalize("Track")
+
+def test_normalize_handles_none_and_empty():
+    assert normalize("") == ""
+    assert normalize(None) == ""
