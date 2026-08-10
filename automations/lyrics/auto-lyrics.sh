@@ -1,8 +1,8 @@
 #!/bin/bash
 # Auto-fetch lyrics for tracks missing .lrc files
 
-SCRIPT_DIR="$(dirname "$0")"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$(dirname "$SCRIPT_DIR")")"
 LOGFILE="${PROJECT_ROOT}/logs/lyrics.log"
 LIMIT="${1:-50}"
 DELAY=1
