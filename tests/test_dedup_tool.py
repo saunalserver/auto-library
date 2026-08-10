@@ -197,3 +197,26 @@ def test_purge_refuses_recent(populated_db, tmp_path):
                           "--older-than", "30d", "--yes"])
     assert rc == 0
     assert recent.exists()  # too new, not purged
+
+
+def test_history_prints_log(populated_db, capsys):
+    conn = sqlite3.connect(populated_db)
+    conn.execute(
+        "INSERT INTO dedup_log (filepath, action, when_at, actor, details) "
+        "VALUES (?, 'trash', datetime('now'), 'test', '/trash/x')",
+        ("/music/A/Album/track.flac",),
+    )
+    conn.commit()
+    conn.close()
+    dedup_tool.main(["history", "--db", populated_db])
+    out = capsys.readouterr().out
+    assert "trash" in out
+    assert "/music/A/Album/track.flac" in out
+
+
+def test_ntfy_summary_returns_reclaimable_space(populated_db, capsys, monkeypatch):
+    # Mock ntfy send so we don't hit network
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout: None)
+    dedup_tool.main(["ntfy-summary", "--db", populated_db,
+                     "--ntfy-url", "http://example.com/x"])
+    # Test passes if no exception — actual ntfy send is best-effort

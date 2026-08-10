@@ -14,6 +14,7 @@ import shutil
 import sqlite3
 import sys
 import time
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 
@@ -235,6 +236,41 @@ def cmd_scan(args) -> int:
     return 0
 
 
+def cmd_history(args) -> int:
+    conn = _connect(args.db)
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM dedup_log ORDER BY when_at DESC LIMIT ?", (args.limit,))
+    for r in cur.fetchall():
+        print(f"  {r['when_at']}  {r['action']:10}  {r['actor']:8}  {r['filepath']}")
+        if r["details"]:
+            print(f"        → {r['details']}")
+    conn.close()
+    return 0
+
+
+def cmd_ntfy_summary(args) -> int:
+    conn = _connect(args.db)
+    cur = conn.execute(
+        "SELECT COUNT(*) as n, COALESCE(SUM(size_bytes), 0) as bytes "
+        "FROM dedup_findings WHERE status = 'pending'"
+    )
+    row = cur.fetchone()
+    n = row["n"]
+    bytes_reclaimable = row["bytes"]
+    msg = f"Dedup pending: {n} findings, {bytes_reclaimable / 1e9:.1f} GB reclaimable"
+    print(msg)
+    if args.ntfy_url:
+        try:
+            req = urllib.request.Request(args.ntfy_url, data=msg.encode("utf-8"), method="POST")
+            req.add_header("Title", "Music Dedup Status")
+            req.add_header("Tags", "headphones,magnifying_glass")
+            urllib.request.urlopen(req, timeout=5)
+        except Exception as e:
+            print(f"(ntfy failed: {e})", file=sys.stderr)
+    conn.close()
+    return 0
+
+
 def cmd_report(args) -> int:
     conn = _connect(args.db)
     cur = conn.cursor()
@@ -321,6 +357,16 @@ def main(argv: list[str] | None = None) -> int:
     p_report.add_argument("--artist", help="Filter by artist (substring)")
     p_report.add_argument("--json", action="store_true", help="JSON output")
     p_report.set_defaults(func=cmd_report)
+
+    p_history = sub.add_parser("history", help="Show dedup_log entries")
+    _add_db_arg(p_history)
+    p_history.add_argument("--limit", type=int, default=50)
+    p_history.set_defaults(func=cmd_history)
+
+    p_ntfy = sub.add_parser("ntfy-summary", help="Send pending-count to ntfy")
+    _add_db_arg(p_ntfy)
+    p_ntfy.add_argument("--ntfy-url", default="http://localhost:8093/music-dedup")
+    p_ntfy.set_defaults(func=cmd_ntfy_summary)
 
     args = parser.parse_args(argv)
     return args.func(args)
