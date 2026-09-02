@@ -51,18 +51,22 @@ def lrclib_get(path: str, params: dict) -> tuple[int, Optional[object]]:
     """GET LRCLIB; retries once with a pause on 429/5xx/network errors. Returns (status, json|None)."""
     url = f"{LRCLIB}/{path}?{urllib.parse.urlencode(params)}"
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    for attempt in (1, 2):
+    code = 0
+    # LRCLIB sheds load with 503 "ServerOverloaded" on roughly half of the
+    # uncached queries; the same query succeeds a second later. Back off and
+    # retry rather than recording a false miss.
+    for delay in (0, 1, 3, 6):
+        if delay:
+            time.sleep(delay)
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:
                 return resp.status, json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
-            if exc.code == 404 or exc.code < 500 and exc.code != 429:
+            if exc.code < 500 and exc.code != 429:
                 return exc.code, None
             code = exc.code
         except (urllib.error.URLError, TimeoutError, OSError):
             code = 0
-        if attempt == 1:
-            time.sleep(5)
     return code, None
 
 
