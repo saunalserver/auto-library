@@ -37,11 +37,23 @@ python3 automations/weekly_playlist.py --dry-run
 python3 automations/pitchfork_selects.py --dry-run   # add --force to redo this week
 python3 automations/fetch_lyrics.py --limit 20 --dry-run
 
-python3 dedup_tool.py report          # pending duplicate pairs
-python3 dedup_tool.py trash <id>      # move one copy to ~/music-trash (reversible)
+python3 dedup_tool.py report                      # pairs grouped by kind
+python3 dedup_tool.py report --kind same-album    # only the ones safe to reclaim
+python3 dedup_tool.py trash <id>                  # move one copy to ~/music-trash (reversible)
 python3 dedup_tool.py restore <path>
 python3 dedup_tool.py purge --older-than 30d --yes
 ```
+
+Duplicate findings are classified, because an audio-identical pair is not
+automatically waste:
+
+| Kind | Meaning | Action |
+|---|---|---|
+| `same-album` | two copies of a track in one album folder, e.g. a clean and an `(Explicit)` rip | safe to trash |
+| `shared-track` | the same recording on two releases by the artist, e.g. an album and its deluxe edition | keep both |
+| `cross-artist` | the same recording under two artist folders | look before touching |
+
+Only `same-album` counts toward the "reclaimable" figure in the ntfy summary.
 
 State is in `database/monitor.db` (SQLite, WAL): play counts, downloaded
 albums, failed downloads and retries, album watch list, lyrics attempts,

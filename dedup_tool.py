@@ -49,6 +49,48 @@ def _trash_path_for(filepath: Path, trash_root: Path) -> Path:
     return trash_root / date / relative
 
 
+
+# --- classification -------------------------------------------------------
+# Not every audio-identical pair is waste. Charli XCX's "BRAT", the remix
+# album and the extended edition legitimately share tracks; deleting one copy
+# would gut an album. Only two files sitting in the *same* album folder (a
+# clean and an "(Explicit)" rip of one track) are safe to reclaim.
+SAME_ALBUM = "same-album"      # duplicate file inside one album folder — safe to trash
+SAME_ARTIST = "shared-track"   # one artist, two releases — both belong, keep them
+CROSS_ARTIST = "cross-artist"  # different artist folders — compilation, split folder, etc.
+
+_KIND_HELP = {
+    SAME_ALBUM: "two copies of one track in the same album folder (safe to trash)",
+    SAME_ARTIST: "the same recording on two releases by this artist (keep both)",
+    CROSS_ARTIST: "the same recording under two artist folders (check before touching)",
+}
+
+
+def classify_pair(filepath: str, matched_path: str) -> str:
+    """Which kind of duplicate this pair is — see the constants above."""
+    a, b = Path(filepath), Path(matched_path)
+    if a.parent == b.parent:
+        return SAME_ALBUM
+    if a.parent.parent == b.parent.parent:
+        return SAME_ARTIST
+    return CROSS_ARTIST
+
+
+def _unique_pending(conn):
+    """Pending findings, one row per pair (they are stored twice, once per file)."""
+    rows = conn.execute(
+        "SELECT * FROM dedup_findings WHERE status = 'pending' ORDER BY added_at DESC"
+    ).fetchall()
+    seen, out = set(), []
+    for r in rows:
+        key = tuple(sorted((r["filepath"], r["matched_path"])))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(r)
+    return out
+
+
 def cmd_trash(args) -> int:
     src = Path(args.filepath_or_id).resolve()
     if not src.exists():
@@ -261,19 +303,26 @@ def cmd_history(args) -> int:
 
 def cmd_ntfy_summary(args) -> int:
     conn = _connect(args.db)
-    cur = conn.execute(
-        "SELECT COUNT(*) as n, COALESCE(SUM(size_bytes), 0) as bytes "
-        "FROM dedup_findings WHERE status = 'pending'"
-    )
-    row = cur.fetchone()
-    n = row["n"]
-    bytes_reclaimable = row["bytes"]
-    # Each duplicate pair is stored as two rows (one per file); report pairs.
-    msg = (f"Dedup: {n // 2} duplicate pair(s) pending review, {bytes_reclaimable / 2 / 1e9:.1f} GB reclaimable. "
-           f"Review: dedup_tool.py report")
-    print(msg)
-    if n == 0:
+    pairs = _unique_pending(conn)
+    counts = {SAME_ALBUM: 0, SAME_ARTIST: 0, CROSS_ARTIST: 0}
+    reclaimable = 0
+    for r in pairs:
+        kind = classify_pair(r["filepath"], r["matched_path"])
+        counts[kind] += 1
+        if kind == SAME_ALBUM:
+            reclaimable += r["size_bytes"] or 0
+    if not pairs:
+        print("Dedup: nothing pending")
+        conn.close()
         return 0
+    # Only same-album pairs are waste. Cross-release pairs are shared tracks
+    # that both albums need, so they must not be advertised as reclaimable.
+    msg = (f"Dedup: {counts[SAME_ALBUM]} safe duplicate(s) in a single album folder "
+           f"({reclaimable / 1e9:.1f} GB), plus {counts[SAME_ARTIST]} track(s) shared between "
+           f"releases and {counts[CROSS_ARTIST]} across artists (keep those). "
+           f"Review: dedup_tool.py report --kind same-album")
+    print(msg)
+    n = len(pairs)
     if args.ntfy_url:
         try:
             req = urllib.request.Request(args.ntfy_url, data=msg.encode("utf-8"), method="POST")
@@ -288,9 +337,7 @@ def cmd_ntfy_summary(args) -> int:
 
 def cmd_report(args) -> int:
     conn = _connect(args.db)
-    cur = conn.cursor()
-    where = []
-    params = []
+    where, params = [], []
     if args.status:
         where.append("status = ?")
         params.append(args.status)
@@ -301,19 +348,51 @@ def cmd_report(args) -> int:
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY added_at DESC"
-    cur.execute(sql, params)
-    rows = cur.fetchall()
-    if args.json:
-        jsonlib.dump([dict(r) for r in rows], sys.stdout, indent=2, default=str)
-        print()
-    else:
-        if not rows:
-            print("No findings.")
+    rows = conn.execute(sql, params).fetchall()
+
+    # Collapse to one row per pair unless the caller wants the raw table.
+    if not args.all_rows:
+        seen, collapsed = set(), []
         for r in rows:
+            key = tuple(sorted((r["filepath"], r["matched_path"])))
+            if key in seen:
+                continue
+            seen.add(key)
+            collapsed.append(r)
+        rows = collapsed
+
+    rows = [r for r in rows if not args.kind
+            or classify_pair(r["filepath"], r["matched_path"]) == args.kind]
+
+    if args.json:
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["kind"] = classify_pair(r["filepath"], r["matched_path"])
+            out.append(d)
+        jsonlib.dump(out, sys.stdout, indent=2, default=str)
+        print()
+        conn.close()
+        return 0
+
+    if not rows:
+        print("No findings.")
+        conn.close()
+        return 0
+
+    by_kind = {}
+    for r in rows:
+        by_kind.setdefault(classify_pair(r["filepath"], r["matched_path"]), []).append(r)
+    for kind in (SAME_ALBUM, SAME_ARTIST, CROSS_ARTIST):
+        group = by_kind.get(kind)
+        if not group:
+            continue
+        print(f"\n== {kind}: {len(group)} pair(s) — {_KIND_HELP[kind]}")
+        for r in group:
             print(f"  [{r['id']}] {r['status']:9} sim={r['similarity']:.2f} "
                   f"{r['artist']} - {r['album']} - {r['title']}")
-            print(f"        path:    {r['filepath']}")
-            print(f"        matches: {r['matched_path']}")
+            print(f"        {r['filepath']}")
+            print(f"        {r['matched_path']}")
     conn.close()
     return 0
 
@@ -371,6 +450,10 @@ def main(argv: list[str] | None = None) -> int:
     p_report.add_argument("--status", default="pending",
                           help="Filter by status (default: pending; pass '' for all)")
     p_report.add_argument("--artist", help="Filter by artist (substring)")
+    p_report.add_argument("--kind", choices=[SAME_ALBUM, SAME_ARTIST, CROSS_ARTIST],
+                          help="Only show this kind of duplicate")
+    p_report.add_argument("--all-rows", action="store_true",
+                          help="Show both stored rows per pair instead of one")
     p_report.add_argument("--json", action="store_true", help="JSON output")
     p_report.set_defaults(func=cmd_report)
 
