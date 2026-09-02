@@ -22,41 +22,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Set, Tuple
 
-try:
-    from dotenv import load_dotenv
-    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
-except ImportError:
-    pass
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import musiclib as m  # noqa: E402
 
-LASTFM_API_URL = "http://ws.audioscrobbler.com/2.0/"
-NTFY_URL = "http://localhost:8093/music"
-TIDDL_BIN = str(Path.home() / ".local/bin/tiddl")
+LASTFM_API_URL = m.LASTFM_API_URL
+NTFY_URL = m.NTFY_URL
+TIDDL_BIN = m.TIDDL_BIN
 
 
 def refresh_tidal_token(logger: logging.Logger) -> bool:
-    """Best-effort proactive Tidal token refresh.
-
-    Why: discovery runs at 07:00 on Sunday, monitor runs every 6h. If the
-    token expired between the last monitor run and discovery, every album
-    fails with auth_expired. Refreshing here avoids the 10/10 failure we
-    saw on 2026-07-19.
-    """
-    try:
-        result = subprocess.run(
-            [TIDDL_BIN, "auth", "refresh"],
-            capture_output=True, text=True, timeout=30,
-        )
-        if result.returncode == 0:
-            logger.info("Tidal token refresh: OK")
-            return True
-        logger.warning(
-            "Tidal token refresh failed (exit %s): %s",
-            result.returncode, (result.stderr or result.stdout).strip()[:200],
-        )
-        return False
-    except Exception as exc:
-        logger.warning("Tidal token refresh error: %s", exc)
-        return False
+    """Refresh the Tidal token if it expires within the hour (shared logic in musiclib)."""
+    return m.ensure_tidal_token(logger)
 
 
 def normalize(text: str) -> str:
@@ -68,18 +44,7 @@ def album_key(artist: str, album: str) -> Tuple[str, str]:
 
 
 def notify(title: str, message: str, tags: str = "musical_note", priority: str = "default"):
-    """Send notification via ntfy."""
-    try:
-        data = message.encode("utf-8")
-        req = urllib.request.Request(NTFY_URL, data=data, method="POST")
-        req.add_header("Title", title)
-        req.add_header("Tags", tags)
-        req.add_header("Priority", priority)
-        urllib.request.urlopen(req, timeout=10)
-    except Exception as e:
-        # Log but don't fail the whole script
-        import sys
-        print(f"Ntfy notification failed: {e}", file=sys.stderr)
+    m.notify(title, message, tags, priority)
 
 
 @dataclass
@@ -191,10 +156,38 @@ class OwnershipChecker:
         self.library_artists: Set[str] = set()
         self.library_albums: Set[Tuple[str, str]] = set()
         self.downloaded: Set[Tuple[str, str]] = set()
+        self.unavailable: Set[Tuple[str, str]] = set()  # gave up (not on Tidal etc.)
 
     def load(self) -> None:
         self._load_library_from_navidrome()
         self._load_download_history()
+        self._load_failures()
+
+    def _load_failures(self) -> None:
+        """Albums the monitor gave up on (fail_count >= 3): skip them here too."""
+        try:
+            conn = sqlite3.connect(self.monitor_db)
+            for artist, album in conn.execute(
+                    "SELECT artist, album FROM failed_downloads WHERE fail_count >= 3"):
+                self.unavailable.add(album_key(artist, album))
+            conn.close()
+        except Exception as exc:
+            self.logger.warning("Could not read failed downloads: %s", exc)
+
+    def record_failure(self, artist: str, album: str, error: str) -> None:
+        """Share failures with the monitor's retry table so nothing is retried forever."""
+        try:
+            conn = sqlite3.connect(self.monitor_db)
+            conn.execute(
+                """INSERT INTO failed_downloads (artist, album, fail_count, first_failed, last_failed, last_error)
+                   VALUES (?, ?, 1, datetime('now'), datetime('now'), ?)
+                   ON CONFLICT(artist, album) DO UPDATE SET
+                       fail_count = fail_count + 1, last_failed = datetime('now'), last_error = ?""",
+                (artist, album, error, error))
+            conn.commit()
+            conn.close()
+        except Exception as exc:
+            self.logger.warning("Could not record failure: %s", exc)
 
     def _load_library_from_navidrome(self) -> None:
         cmd = [
@@ -244,6 +237,8 @@ class OwnershipChecker:
 
     def is_owned(self, artist: str, album: str) -> Tuple[bool, Optional[str]]:
         key = album_key(artist, album)
+        if key in self.unavailable:
+            return True, "unavailable"
         if key in self.downloaded:
             return True, "history"
         if key in self.library_albums:
@@ -281,10 +276,12 @@ class OwnershipChecker:
             cur.execute(
                 """
                 INSERT OR IGNORE INTO downloaded_albums (artist, album, download_date, file_count)
-                VALUES (?, ?, datetime('now'), 0)
+                VALUES (?, ?, datetime('now'), ?)
                 """,
-                (artist, album),
+                (artist, album, m.count_audio_files(artist, album, root=self.music_root)),
             )
+            cur.execute("DELETE FROM failed_downloads WHERE LOWER(artist)=LOWER(?) AND LOWER(album)=LOWER(?)",
+                        (artist, album))
             conn.commit()
             conn.close()
         except Exception as exc:
@@ -361,12 +358,26 @@ def run_downloads(selection: List[Candidate], smart_download_path: Path, ownersh
                     logger.info("  %s", line.strip())
 
             if result.returncode == 0 and 'Best match' in combined_output:
-                logger.info("SUCCESS: %s - %s", item.artist, item.album)
-                ownership.record_download(item.artist, item.album)
-                success += 1
-                succeeded.append(f"{item.artist} - {item.album}")
+                on_disk = m.count_audio_files(item.artist, item.album, root=ownership.music_root)
+                if on_disk == 0:
+                    # smart_download matched a differently-titled Tidal album (singles, deluxe
+                    # editions) — check the folder tiddl actually wrote before calling it lost.
+                    mt = re.search(r'Best match:\s*(.+?) - (.+?) \(', combined_output)
+                    if mt:
+                        on_disk = m.count_audio_files(mt.group(1), mt.group(2), root=ownership.music_root)
+                if on_disk == 0:
+                    logger.error("NO FILES ON DISK after download: %s - %s (drive problem?)", item.artist, item.album)
+                    ownership.record_failure(item.artist, item.album, "tiddl reported success but no files on disk")
+                    failed.append(f"{item.artist} - {item.album} (nothing on disk)")
+                    failure += 1
+                else:
+                    logger.info("SUCCESS: %s - %s (%d files)", item.artist, item.album, on_disk)
+                    ownership.record_download(item.artist, item.album)
+                    success += 1
+                    succeeded.append(f"{item.artist} - {item.album}")
             elif 'could not find matching album' in combined_output.lower():
                 logger.warning("NOT FOUND on Tidal: %s - %s", item.artist, item.album)
+                ownership.record_failure(item.artist, item.album, "Not found on Tidal")
                 failed.append(f"{item.artist} - {item.album} (not on Tidal)")
                 failure += 1
             elif 'auth expired' in combined_output.lower() or 'api_error' in combined_output.lower():
@@ -391,7 +402,7 @@ def build_candidates(lastfm: LastfmClient, ownership: OwnershipChecker, top_arti
     top_candidates: List[Candidate] = []
     sim_candidates: List[Candidate] = []
     seen: Set[Tuple[str, str]] = set()
-    skip_stats = {"history": 0, "library": 0, "disk": 0, "artist_filtered": 0}
+    skip_stats = {"history": 0, "library": 0, "disk": 0, "unavailable": 0, "artist_filtered": 0}
 
     logger.info("=== Checking albums from top artists ===")
     for artist in top_artists:
@@ -440,22 +451,7 @@ def build_candidates(lastfm: LastfmClient, ownership: OwnershipChecker, top_arti
 
 
 def setup_logger(log_file: Path) -> logging.Logger:
-    log_file.parent.mkdir(parents=True, exist_ok=True)
-    logger = logging.getLogger("discovery")
-    logger.handlers.clear()
-    logger.setLevel(logging.INFO)
-    formatter = logging.Formatter("[%(asctime)s] %(levelname)s: %(message)s")
-    # Only attach a FileHandler when not running under systemd — systemd
-    # already captures stdout into the same log file, so attaching both
-    # handlers duplicates every line.
-    if not os.environ.get("INVOCATION_ID"):
-        fh = logging.FileHandler(log_file)
-        fh.setFormatter(formatter)
-        logger.addHandler(fh)
-    sh = logging.StreamHandler(sys.stdout)
-    sh.setFormatter(formatter)
-    logger.addHandler(sh)
-    return logger
+    return m.setup_logger("discovery", log_file.name)
 
 
 def parse_args() -> argparse.Namespace:
@@ -511,6 +507,8 @@ def main() -> int:
     if not config["lastfm_api_key"]:
         logger.error("No LASTFM_API_KEY provided")
         return 1
+    if not (config["dry_run"] or config["report_only"]) and not m.ensure_library(logger, "discovery downloads"):
+        return 2
 
     ownership = OwnershipChecker(
         music_root=config["music_root"],
@@ -555,6 +553,8 @@ def main() -> int:
     refresh_tidal_token(logger)
     success, failure, succeeded, failed = run_downloads(selection, config["smart_download"], ownership, logger)
     logger.info("Downloads complete: %d success, %d failed", success, failure)
+    if success:
+        m.Subsonic(client="discovery").rescan(logger)
 
     # Notify results with album names
     if success > 0:

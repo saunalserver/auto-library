@@ -53,7 +53,7 @@ for track in results.tracks.items[:10]:
     album_title = track.album.title if track.album else ""
     print(f"TRACK|{track.id}|{track.title}|{artist_name}|{album_id}|{album_title}")
 '''
-    result = subprocess.run([TIDDL_PYTHON, "-c", code], capture_output=True, text=True)
+    result = subprocess.run([TIDDL_PYTHON, "-c", code], capture_output=True, text=True, timeout=90)
 
     if result.returncode == 2 or "API_ERROR" in result.stderr:
         error_msg = result.stderr.strip()
@@ -98,7 +98,7 @@ results = api.getArtistAlbums(''' + str(artist_id) + ''')
 for album in results.items[:30]:
     print(f"{album.id}|{album.title}|{album.numberOfTracks}")
 '''
-    result = subprocess.run([TIDDL_PYTHON, "-c", code], capture_output=True, text=True)
+    result = subprocess.run([TIDDL_PYTHON, "-c", code], capture_output=True, text=True, timeout=90)
 
     albums = []
     for line in result.stdout.strip().split("\n"):

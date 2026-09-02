@@ -1,0 +1,9 @@
+[Unit]
+Description=Pitchfork Selects — download this week's picks and build the Navidrome playlist
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/saunalserver/projects/tidal_auto_monitor
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/flock -w 1800 %t/tidal-monitor.lock /usr/bin/python3 /home/saunalserver/projects/tidal_auto_monitor/automations/pitchfork_selects.py
+TimeoutStartSec=3h

@@ -1,0 +1,10 @@
+[Unit]
+Description=TIDAL Auto-Download Monitor (Last.fm scrobbles -> tiddl)
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/saunalserver/projects/tidal_auto_monitor
+Environment=PYTHONUNBUFFERED=1
+# flock: a manual run and the timer can never overlap (double downloads)
+ExecStart=/usr/bin/flock -w 1800 %t/tidal-monitor.lock /usr/bin/python3 /home/saunalserver/projects/tidal_auto_monitor/monitor.py
+TimeoutStartSec=3h

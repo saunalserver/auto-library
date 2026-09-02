@@ -78,3 +78,14 @@ def test_compare_skips_protected_files(fake_library_with_dupes):
     cur = conn.execute("SELECT status FROM dedup_findings WHERE filepath = ?", (dup_path,))
     statuses = [r[0] for r in cur.fetchall()]
     assert "protected" in statuses or len(statuses) == 0  # implementation-defined, just verify no crash
+
+
+def test_compare_is_idempotent_across_runs(fake_library_with_dupes):
+    """The weekly scan must not re-add the same pair under a new group_id."""
+    conn, _ = fake_library_with_dupes
+    first = dedup_state.compare_library(conn)
+    second = dedup_state.compare_library(conn)
+    assert first > 0
+    assert second == 0
+    n = conn.execute("SELECT COUNT(*) FROM dedup_findings").fetchone()[0]
+    assert n == first

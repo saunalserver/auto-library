@@ -1,0 +1,10 @@
+[Unit]
+Description=TIDAL monitor — every 6 hours (00:10, 06:10, 12:10, 18:10)
+
+[Timer]
+OnCalendar=*-*-* 00/6:10:00
+Persistent=true
+Unit=tidal-monitor.service
+
+[Install]
+WantedBy=timers.target

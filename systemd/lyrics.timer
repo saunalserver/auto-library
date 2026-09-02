@@ -1,9 +1,10 @@
 [Unit]
-Description=Run Lyrics Fetch daily at 3AM
+Description=Fetch missing lyrics (.lrc) daily at 03:00
 
 [Timer]
 OnCalendar=*-*-* 03:00:00
 Persistent=true
+Unit=lyrics.service
 
 [Install]
 WantedBy=timers.target

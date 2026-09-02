@@ -1,9 +1,0 @@
-[Unit]
-Description=Weekly dedup scan
-
-[Timer]
-OnCalendar=Mon 04:00
-Persistent=true
-
-[Install]
-WantedBy=timers.target

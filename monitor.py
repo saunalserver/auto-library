@@ -5,12 +5,16 @@ TIDAL Auto-Monitor - Improved version with reliability fixes:
 - Failed download tracking with retry
 - Notifications on failures, not just success
 """
-NTFY_URL = 'http://localhost:8093/music'
-import sys, sqlite3, subprocess, time, json, re, os
+import sys, sqlite3, subprocess, time, json, re, os, logging
 from pathlib import Path
 from datetime import datetime
 import urllib.request, urllib.parse
 from dotenv import load_dotenv
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import musiclib as m
+
+NTFY_URL = m.NTFY_URL
 
 try:
     from dedup_lib import (
@@ -38,25 +42,22 @@ PLAY_THRESHOLD = 3
 NAVIDROME_CONTAINER = "navidrome"
 NAVIDROME_DB = "/data/navidrome.db"
 MAX_RETRIES = 3
+RETRY_BATCH = 10          # failed albums retried per run
+WATCH_INTERVAL = 7 * 86400   # re-check a watched artist for a full album weekly...
+WATCH_MAX_AGE = 180 * 86400  # ...for up to 6 months
+
+_logger = m.setup_logger('tidal-monitor', LOG_FILE.name)
+_LEVELS = {'INFO': logging.INFO, 'WARNING': logging.WARNING, 'ERROR': logging.ERROR}
 
 def log(message, level='INFO'):
-    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    log_entry = f'[{timestamp}] {level}: {message}'
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    with open(LOG_FILE, 'a') as f:
-        f.write(log_entry + '\n')
-    print(log_entry)
+    """Rotating logs/monitor.log + stdout (the journal under systemd). Nothing is written twice."""
+    if level == 'SUCCESS':
+        _logger.info('SUCCESS: %s', message)
+    else:
+        _logger.log(_LEVELS.get(level, logging.INFO), message)
 
 def notify(title, message, tags="musical_note", priority="default"):
-    try:
-        data = message.encode("utf-8")
-        req = urllib.request.Request(NTFY_URL, data=data, method="POST")
-        req.add_header("Title", title)
-        req.add_header("Tags", tags)
-        req.add_header("Priority", priority)
-        urllib.request.urlopen(req, timeout=10)
-    except Exception as e:
-        log(f"Ntfy failed: {e}", "WARNING")
+    m.notify(title, message, tags, priority, logger=_logger)
 
 def normalize(text):
     if not text:
@@ -86,29 +87,7 @@ def count_local_audio_files(artist, album):
     differences from Tidal metadata, e.g. 'Charli xcx' vs 'Charli XCX').
     Does NOT match Deluxe/parenthetical variants — exact album name only.
     """
-    if not MUSIC_ROOT.exists():
-        return 0
-    artist_n = normalize(artist)
-    album_n = normalize(album)
-    if not artist_n or not album_n:
-        return 0
-    total = 0
-    try:
-        for artist_dir in MUSIC_ROOT.iterdir():
-            if not artist_dir.is_dir():
-                continue
-            if normalize(artist_dir.name) != artist_n:
-                continue
-            for album_dir in artist_dir.iterdir():
-                if not album_dir.is_dir():
-                    continue
-                if normalize(album_dir.name) == album_n:
-                    audio = list(album_dir.glob("*.flac")) + list(album_dir.glob("*.m4a"))
-                    total += len(audio)
-    except Exception as e:
-        log(f"Error counting local audio files for {artist} - {album}: {e}", "WARNING")
-        return 0
-    return total
+    return m.count_audio_files(artist, album, root=MUSIC_ROOT)
 
 
 def post_download_dedup_check(conn, artist, album):
@@ -123,10 +102,11 @@ def post_download_dedup_check(conn, artist, album):
     import uuid as _uuid
     from base64 import b64decode
     from struct import unpack
-    album_dir = MUSIC_ROOT / artist / album
-    if not album_dir.exists():
+    new_files = []
+    for album_dir in m.find_album_dirs(artist, album, root=MUSIC_ROOT):
+        new_files.extend(m.audio_files(album_dir))
+    if not new_files:
         return
-    new_files = list(album_dir.glob("*.flac")) + list(album_dir.glob("*.m4a"))
     suspect_dupes = []
     for f in new_files:
         try:
@@ -159,6 +139,11 @@ def post_download_dedup_check(conn, artist, album):
                 )
                 sim = compare_fingerprints(new_fp, row_fp)
                 if sim >= 0.95:
+                    already = conn.execute(
+                        "SELECT 1 FROM dedup_findings WHERE filepath = ? AND matched_path = ? AND status != 'deleted'",
+                        (str(f), row['filepath'])).fetchone()
+                    if already:
+                        continue
                     group_id = str(_uuid.uuid4())
                     try:
                         conn.execute("""
@@ -332,6 +317,9 @@ def init_database():
     if 'check_count' not in columns:
         c.execute("ALTER TABLE album_watch ADD COLUMN check_count INTEGER DEFAULT 0")
         log('Migrated album_watch: added check_count column')
+    if 'last_checked' not in columns:
+        c.execute("ALTER TABLE album_watch ADD COLUMN last_checked REAL")
+        log('Migrated album_watch: added last_checked column')
     conn.commit()
     conn.close()
     log('Database initialized')
@@ -383,8 +371,8 @@ def get_failed_downloads_for_retry():
     """Get downloads that failed but haven't exceeded retry limit."""
     conn = sqlite3.connect(DATABASE_PATH)
     c = conn.cursor()
-    c.execute("""SELECT artist, album, fail_count FROM failed_downloads 
-                 WHERE fail_count < ? ORDER BY last_failed ASC LIMIT 5""", (MAX_RETRIES,))
+    c.execute("""SELECT artist, album, fail_count FROM failed_downloads
+                 WHERE fail_count < ? ORDER BY last_failed ASC LIMIT ?""", (MAX_RETRIES, RETRY_BATCH))
     results = c.fetchall()
     conn.close()
     return [{'artist': r[0], 'album': r[1], 'fail_count': r[2]} for r in results]
@@ -397,18 +385,27 @@ def clear_failed_download(artist, album):
     conn.commit()
     conn.close()
 
-def fetch_recent_scrobbles(since_timestamp):
-    params = {'method': 'user.getrecenttracks', 'user': LASTFM_USERNAME, 'api_key': LASTFM_API_KEY,
-              'from': str(since_timestamp), 'format': 'json', 'limit': 200}
-    url = f'{LASTFM_API_URL}?{urllib.parse.urlencode(params)}'
+def fetch_recent_scrobbles(since_timestamp, max_pages=5):
+    """All scrobbles since `since_timestamp`, following Last.fm's pagination (200/page)."""
+    tracks = []
     try:
-        with urllib.request.urlopen(url, timeout=30) as response:
-            data = json.loads(response.read().decode())
-        if 'recenttracks' not in data:
-            return []
-        tracks = data['recenttracks'].get('track', [])
-        if isinstance(tracks, dict):
-            tracks = [tracks]
+        page = 1
+        while page <= max_pages:
+            params = {'method': 'user.getrecenttracks', 'user': LASTFM_USERNAME, 'api_key': LASTFM_API_KEY,
+                      'from': str(since_timestamp), 'format': 'json', 'limit': 200, 'page': page}
+            url = f'{LASTFM_API_URL}?{urllib.parse.urlencode(params)}'
+            with urllib.request.urlopen(url, timeout=30) as response:
+                data = json.loads(response.read().decode())
+            if 'recenttracks' not in data:
+                break
+            chunk = data['recenttracks'].get('track', [])
+            if isinstance(chunk, dict):
+                chunk = [chunk]
+            tracks.extend(chunk)
+            total_pages = int(data['recenttracks'].get('@attr', {}).get('totalPages', 1) or 1)
+            if page >= total_pages:
+                break
+            page += 1
         scrobbles = []
         for track in tracks:
             if '@attr' in track and 'nowplaying' in track.get('@attr', {}):
@@ -578,6 +575,18 @@ def download_album(artist, album, checker, min_tracks=2):
         if result.returncode == 0 and 'Best match' in combined_output:
             expected = parse_expected_track_count(combined_output)
             actual = count_local_audio_files(artist, album)
+            if actual == 0:
+                # Singles/deluxe editions land under Tidal's album title, not Last.fm's.
+                mt = re.search(r'Best match:\s*(.+?) - (.+) \(\d+ tracks?\)\s*$', combined_output, re.MULTILINE)
+                if mt:
+                    actual = count_local_audio_files(mt.group(1), mt.group(2))
+            if actual == 0:
+                # tiddl exited 0 but nothing is on disk. Seen for a whole week
+                # when the USB drive died: 21 albums were recorded as owned
+                # and never retried. Treat as a failure so it is retried.
+                log(f'NO FILES ON DISK after download: {artist} - {album}', 'ERROR')
+                record_failed_download(artist, album, "tiddl reported success but no files on disk")
+                return False, "download_failed"
             log(f'Successfully downloaded: {artist} - {album}', 'SUCCESS')
             if expected is not None and actual < expected:
                 # Partial download — tiddl returned success but the disk has
@@ -757,33 +766,37 @@ except Exception as e:
         return True  # On error, don't block
 
 def check_album_watch(checker):
-    """Check watched artists for new full albums. Singles from Pitchfork/etc get replaced."""
-    # Give up after this many checks — avoids burning API calls forever on
-    # stale watches. At 4 runs/day this is ~1 week.
-    MAX_CHECK_COUNT = 28
+    """Check watched artists (singles from Pitchfork etc.) for a full album.
 
+    Each entry is checked at most once per WATCH_INTERVAL and dropped after
+    WATCH_MAX_AGE — albums usually follow a single by months, so the old
+    "28 checks then give up forever" cap silently abandoned every watch after
+    a week. Returns the number of albums downloaded.
+    """
+    now = time.time()
     conn = sqlite3.connect(DATABASE_PATH)
     c = conn.cursor()
-    # Bump check_count for everything we're about to look at, then only
-    # return entries that haven't exceeded the cap.
-    c.execute("UPDATE album_watch SET check_count = check_count + 1")
-    c.execute(
-        "SELECT DISTINCT artist, track_title FROM album_watch WHERE check_count <= ?",
-        (MAX_CHECK_COUNT,),
-    )
+    c.execute("SELECT artist, track_title FROM album_watch "
+              "WHERE added IS NOT NULL AND (julianday('now') - julianday(added)) * 86400 > ?", (WATCH_MAX_AGE,))
+    expired = c.fetchall()
+    for artist, title in expired:
+        log(f"Album watch expired after 6 months: {artist} ('{title}')")
+    c.execute("DELETE FROM album_watch WHERE added IS NOT NULL AND (julianday('now') - julianday(added)) * 86400 > ?",
+              (WATCH_MAX_AGE,))
+    c.execute("SELECT DISTINCT artist, track_title FROM album_watch "
+              "WHERE last_checked IS NULL OR last_checked < ?", (now - WATCH_INTERVAL,))
     watched = [(row[0], row[1]) for row in c.fetchall()]
-    # Also report how many we skipped so it's visible in logs.
-    c.execute("SELECT COUNT(*) FROM album_watch WHERE check_count > ?", (MAX_CHECK_COUNT,))
-    skipped = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM album_watch")
+    total = c.fetchone()[0]
     conn.commit()
     conn.close()
 
     if not watched:
-        if skipped:
-            log(f"Album watch: {skipped} entries past check cap ({MAX_CHECK_COUNT}), skipping")
-        return
+        if total:
+            log(f"Album watch: {total} entries, none due (checked weekly)")
+        return 0
 
-    log(f"Checking album watch for {len(watched)} artists{f' ({skipped} skipped past cap)' if skipped else ''}")
+    log(f"Checking album watch for {len(watched)} of {total} artists")
 
     TIDDL_PYTHON = os.getenv('TIDDL_PYTHON', str(Path.home() / ".local/share/pipx/venvs/tiddl/bin/python"))
     found_count = 0
@@ -804,6 +817,11 @@ for a in results.artists.items[:3]:
     print(f"ARTIST|{a.id}|{a.name}")
 '''
         result = subprocess.run([TIDDL_PYTHON, "-c", code], capture_output=True, text=True, timeout=15)
+        conn_mark = sqlite3.connect(DATABASE_PATH)
+        conn_mark.execute("UPDATE album_watch SET check_count = check_count + 1, last_checked = ? "
+                          "WHERE artist = ? AND track_title = ?", (now, artist, watched_single))
+        conn_mark.commit()
+        conn_mark.close()
         if result.returncode == 2:
             log(f"Album watch API error for {artist}", "WARNING")
             continue
@@ -874,12 +892,19 @@ for a in results.items[:50]:
 
     if found_count:
         log(f"Album watch summary: {found_count} new full albums found")
+    return found_count
 
 def main():
     log('='*60)
     log('TIDAL Auto-Monitor Started')
     log('='*60)
     init_database()
+
+    # The library lives on a USB drive that has silently dropped off before.
+    # Bail out early (without advancing last_check_time, so no scrobbles are
+    # lost) rather than "downloading" into a dead mount.
+    if not m.ensure_library(_logger, "TIDAL monitor"):
+        return 2
 
     # Verify tiddl patch BEFORE auth check — auth check itself can trigger
     # the bug. If the patch is missing, every download is silently corrupt.
@@ -919,13 +944,14 @@ def main():
     log(f'Found {len(scrobbles)} scrobbles since last check')
     current_time = int(time.time())
     
+    downloads = 0
     if not scrobbles:
         log('No new scrobbles')
     else:
         tracks_to_download = update_play_counts(scrobbles)
         log(f'{len(tracks_to_download)} tracks hit the {PLAY_THRESHOLD}-play threshold')
         if tracks_to_download and auth_ok:
-            process_downloads(tracks_to_download, checker)
+            downloads += process_downloads(tracks_to_download, checker)
         elif tracks_to_download and not auth_ok:
             log(f"Skipping {len(tracks_to_download)} downloads due to auth failure", "WARNING")
             # Record them as failed so they'll be retried
@@ -934,9 +960,16 @@ def main():
     
     # Retry failed downloads if auth is OK
     if auth_ok:
-        retry_failed_downloads(checker)
-        check_album_watch(checker)
-    
+        downloads += retry_failed_downloads(checker)
+        downloads += check_album_watch(checker) or 0
+
+    if downloads:
+        try:
+            m.Subsonic(client="tidal-monitor").start_scan()
+            log(f"Navidrome rescan triggered ({downloads} new album(s))")
+        except Exception as e:
+            log(f"Navidrome rescan failed: {e}", "WARNING")
+
     set_last_check_time(current_time)
     log('='*60)
     log('Complete')
