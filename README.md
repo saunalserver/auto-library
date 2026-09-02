@@ -66,7 +66,8 @@ Notifications go to ntfy topic `music` (dedup summary to `music-dedup`).
   `monitor.py` verifies it every run and alerts if a pipx upgrade removed it.
 - Tidal titles differ from Last.fm's (singles, deluxe editions, casing), so
   folder lookups are case-insensitive and fall back to the matched Tidal title.
-- The library is on a USB drive that has dropped off the bus before. When that
-  happens the automations stop and send one ntfy alert per 6 h.
+- The library drive is sometimes unplugged. The automations detect that, skip
+  the run without advancing their last-checked timestamp, and send one ntfy
+  alert per 6 h. Nothing is missed; everything resumes when it is plugged back in.
 
 MIT
