@@ -21,6 +21,45 @@ def normalize(text):
 def similarity(a, b):
     return SequenceMatcher(None, normalize(a), normalize(b)).ratio()
 
+
+_EDITION_RE = re.compile(r"[\(\[]([^)\]]*)[\)\]]\s*$")
+
+
+def edition(title):
+    """The trailing parenthetical of an album title, normalized.
+
+    'choke enough (Deluxe)' -> 'deluxe';  'choke enough' -> ''.
+    """
+    match = _EDITION_RE.search((title or "").strip())
+    return normalize(match.group(1)) if match else ""
+
+
+def base_title(title):
+    """The album title with its trailing parenthetical removed, normalized."""
+    return normalize(_EDITION_RE.sub("", (title or "").strip()))
+
+
+def album_score(candidate, wanted):
+    """How well a Tidal album title matches the one we asked for, in [0, 1].
+
+    Plain string similarity is not enough: asking for 'choke enough (Deluxe)'
+    scored 'choke enough (remixes)' (0.82) above the base album 'choke enough'
+    (0.77), purely because 'remixes' shares letters with 'deluxe'. So once the
+    base titles agree, decide on the edition instead of on spelling:
+    the same edition wins, no edition is an acceptable fallback, and a
+    *different* edition is penalised.
+    """
+    score = similarity(candidate, wanted)
+    if base_title(candidate) and base_title(candidate) == base_title(wanted):
+        want_ed, have_ed = edition(wanted), edition(candidate)
+        if want_ed == have_ed:
+            score += 0.15
+        elif not have_ed:
+            score += 0.05          # base album: safe stand-in for a missing edition
+        else:
+            score -= 0.15          # a different edition is the wrong record
+    return max(0.0, min(1.0, score))
+
 class ApiError(Exception):
     """Raised when the Tidal API call fails (auth, network, etc.)"""
     pass
@@ -130,7 +169,7 @@ def find_best_album_match(artist_name, album_name, min_tracks=2):
 
     for album in albums:
         artist_sim = similarity(album["artist"], artist_name)
-        album_sim = similarity(album["title"], album_name)
+        album_sim = album_score(album["title"], album_name)
         combined = (artist_sim * 0.4) + (album_sim * 0.6)
 
         if artist_sim >= 0.5 and album_sim >= 0.5 and album["track_count"] >= min_tracks:
@@ -147,7 +186,7 @@ def find_best_album_match(artist_name, album_name, min_tracks=2):
 
         for album in albums:
             artist_sim = similarity(album["artist"], artist_name)
-            album_sim = similarity(album["title"], album_name)
+            album_sim = album_score(album["title"], album_name)
             combined = (artist_sim * 0.4) + (album_sim * 0.6)
 
             if artist_sim >= 0.5 and album_sim >= 0.5 and album["track_count"] >= min_tracks:
@@ -163,7 +202,7 @@ def find_best_album_match(artist_name, album_name, min_tracks=2):
 
         for album in albums:
             artist_sim = similarity(album["artist"], artist_name)
-            album_sim = similarity(album["title"], album_name)
+            album_sim = album_score(album["title"], album_name)
             combined = (artist_sim * 0.4) + (album_sim * 0.6)
 
             # Require higher artist match when searching just album name
@@ -207,7 +246,7 @@ def find_best_album_match(artist_name, album_name, min_tracks=2):
                 best_alt = None
                 best_alt_score = 0
                 for a in artist_albums:
-                    name_sim = similarity(a["title"], album_name)
+                    name_sim = album_score(a["title"], album_name)
                     # Only consider albums whose name matches what we're searching for
                     if name_sim >= 0.6 and a["track_count"] >= min_tracks:
                         # Score: name similarity primary, track count bonus secondary
