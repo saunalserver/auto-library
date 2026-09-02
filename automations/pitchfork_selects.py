@@ -198,19 +198,71 @@ def fetch_and_parse_article(url: str, logger: logging.Logger) -> List[P4kTrack]:
 # Step 3: library lookups
 # ---------------------------------------------------------------------------
 
+# Collaboration separators. Pitchfork writes "Turnstile and Slayyyter"; the
+# file tags say "Turnstile; Slayyyter". Split both into name sets to compare.
+_ARTIST_SPLIT = re.compile(
+    r"\s*(?:;|,|&|/|\+|\bx\b|\band\b|\bwith\b|\bfeat\.?\b|\bfeaturing\b|\bvs\.?\b)\s*",
+    re.IGNORECASE,
+)
+_PUNCT = re.compile(r"[^\w\s]+")
+
+
+def loose(text: str) -> str:
+    """Lowercase, drop punctuation, collapse whitespace.
+
+    'Birds (Slayyyter Version)' and 'BIRDS: SLAYYYTER VERSION' both become
+    'birds slayyyter version'.
+    """
+    return re.sub(r"\s+", " ", _PUNCT.sub(" ", (text or "").lower())).strip()
+
+
+def artist_names(text: str) -> set:
+    """The individual artists in a credit string, loosely normalised."""
+    return {loose(part) for part in _ARTIST_SPLIT.split(text or "") if loose(part)}
+
+
+def titles_match(wanted: str, found: str) -> bool:
+    """True when two track titles denote the same recording.
+
+    Exact after loose normalisation, or one contains the other and they are
+    close in length — so 'Birds' does NOT match 'BIRDS: DYING FETUS VERSION',
+    but 'Birds (Slayyyter Version)' matches 'BIRDS: SLAYYYTER VERSION'.
+    """
+    a, b = loose(wanted), loose(found)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    if (a in b or b in a) and min(len(a), len(b)) / max(len(a), len(b)) >= 0.6:
+        return True
+    return similarity(a, b) >= 0.9
+
+
+def artists_match(wanted: str, found: str) -> bool:
+    """True when the credits share an artist (or the primary names are close)."""
+    want, have = artist_names(wanted), artist_names(found)
+    if want & have:
+        return True
+    return any(similarity(w, h) > 0.85 for w in want for h in have)
+
+
 def find_track_in_navidrome(sub: m.Subsonic, track: P4kTrack, logger: logging.Logger) -> Optional[str]:
     """Song ID in Navidrome for this track, or None."""
-    for query in (f"{track.artist} {track.title}", track.title):
+    primary = next(iter(sorted(artist_names(track.artist), key=len, reverse=True)), track.artist)
+    queries = [f"{track.artist} {track.title}", f"{primary} {track.title}", track.title]
+    seen_queries = set()
+    for query in queries:
+        if query in seen_queries:
+            continue
+        seen_queries.add(query)
         try:
-            songs = sub.search_songs(query, count=5)
+            songs = sub.search_songs(query, count=10)
         except Exception as exc:  # noqa: BLE001
             logger.warning("  Navidrome search failed: %s", exc)
             return None
         for song in songs:
-            song_artist = (song.get("artist") or "").lower()
-            song_title = (song.get("title") or "").lower()
-            if (normalize(track.artist) in song_artist and normalize(track.title) in song_title) or (
-                normalize(track.title) in song_title and similarity(normalize(track.artist), song_artist) > 0.6
+            if titles_match(track.title, song.get("title") or "") and artists_match(
+                track.artist, song.get("artist") or ""
             ):
                 logger.info("  In library: %s by %s (id=%s)", song.get("title"), song.get("artist"), song.get("id"))
                 return str(song["id"])

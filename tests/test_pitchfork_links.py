@@ -34,3 +34,28 @@ def test_parse_article_html_real_fixture():
     fixture = PROJECT_ROOT / "tests" / "fixtures" / "p4k_selects_sample.html"
     tracks = p._parse_article_html(fixture.read_text(encoding="utf-8"), __import__("logging").getLogger("t"))
     assert len(tracks) >= 10
+
+
+def test_titles_match_across_punctuation():
+    """'Birds (Slayyyter Version)' is the same recording as 'BIRDS: SLAYYYTER VERSION'."""
+    assert p.titles_match("Birds (Slayyyter Version)", "BIRDS: SLAYYYTER VERSION")
+    assert p.titles_match("Struggle Gang", "Struggle Gang")
+    assert p.titles_match("You’re Not Bigger Than the Program", "you're not bigger than the program")
+
+
+def test_titles_do_not_match_a_different_version():
+    """Asking for the original must not pull in a remix of it."""
+    assert not p.titles_match("Birds", "BIRDS: DYING FETUS VERSION")
+    assert not p.titles_match("Inside Your Light", "Inside")
+
+
+def test_artists_match_across_collaboration_separators():
+    assert p.artists_match("Turnstile and Slayyyter", "Turnstile; Slayyyter")
+    assert p.artists_match("Turnstile and Slayyyter", "Turnstile")
+    assert p.artists_match("Jay Som", "Jay Som feat. Someone")
+    assert not p.artists_match("Imperial Teen", "Turnstile; Slayyyter")
+
+
+def test_artist_names_splits_credits():
+    assert p.artist_names("Turnstile; Slayyyter") == {"turnstile", "slayyyter"}
+    assert p.artist_names("A & B feat. C") == {"a", "b", "c"}
