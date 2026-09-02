@@ -30,3 +30,6 @@ credentials.json
 
 # generated weekly by discovery_recommendations.py
 discovery-queue.txt
+
+# pytest
+.pytest_cache/
