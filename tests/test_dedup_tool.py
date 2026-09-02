@@ -38,12 +38,21 @@ def test_report_pending_returns_findings(populated_db, capsys):
 
 
 def test_report_json_outputs_valid_json(populated_db, capsys):
+    """One JSON object per duplicate *pair*, each tagged with its kind.
+
+    Findings are stored twice (once per file); the report collapses them so a
+    pair is not counted double. --all-rows still exposes the raw table.
+    """
     import json
     dedup_tool.main(["report", "--db", populated_db, "--json"])
-    out = capsys.readouterr().out
-    data = json.loads(out)
+    data = json.loads(capsys.readouterr().out)
     assert isinstance(data, list)
-    assert len(data) == 2
+    assert len(data) == 1
+    assert data[0]["kind"] in (dedup_tool.SAME_ALBUM, dedup_tool.SAME_ARTIST,
+                               dedup_tool.CROSS_ARTIST)
+
+    dedup_tool.main(["report", "--db", populated_db, "--json", "--all-rows"])
+    assert len(json.loads(capsys.readouterr().out)) == 2
 
 
 def test_scan_chains_index_and_compare(tmp_path, monkeypatch):
