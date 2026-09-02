@@ -49,3 +49,31 @@ def test_post_download_fingerprint_detects_dup(tmp_path, monkeypatch):
     monitor.post_download_dedup_check(conn, "Artist", "NewAlbum")
     findings_after = conn.execute("SELECT COUNT(*) FROM dedup_findings").fetchone()[0]
     assert findings_after > findings_before
+
+
+def test_db_connect_rows_support_name_access(tmp_path, monkeypatch):
+    """monitor.db_connect() must yield sqlite3.Row.
+
+    dedup_lib.find_existing_fingerprints returns rows the post-download check
+    indexes by name (row['filepath']). With plain tuples every check failed
+    with "tuple indices must be integers" — silently, since the caller only
+    logs a warning. Rows must also still unpack and index by position, which
+    the rest of monitor.py relies on.
+    """
+    import sqlite3 as _sq
+    from importlib import import_module
+    import sys as _sys
+    _sys.path.insert(0, ".")
+    monitor = import_module("monitor")
+
+    db = tmp_path / "m.db"
+    monkeypatch.setattr(monitor, "DATABASE_PATH", db)
+    conn = monitor.db_connect()
+    conn.execute("CREATE TABLE t (filepath TEXT, n INTEGER)")
+    conn.execute("INSERT INTO t VALUES ('/a/b.flac', 7)")
+    row = conn.execute("SELECT filepath, n FROM t").fetchone()
+    assert row["filepath"] == "/a/b.flac"      # name access (dedup_lib)
+    assert row[1] == 7                          # positional (rest of monitor.py)
+    path, n = row                               # unpacking (loops in monitor.py)
+    assert (path, n) == ("/a/b.flac", 7)
+    conn.close()

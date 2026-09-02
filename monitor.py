@@ -290,9 +290,30 @@ except Exception as e:
     except Exception as e:
         return False, f"Auth check failed: {e}"
 
+def db_connect():
+    """SQLite connection with a long busy timeout.
+
+    The dedup scan, lyrics fetch and this monitor all write to monitor.db.
+    sqlite3's 5 s default made the monitor die with "database is locked"
+    mid-download; WAL plus a 60 s timeout lets them interleave instead.
+    """
+    conn = sqlite3.connect(DATABASE_PATH, timeout=60)
+    # Row (not plain tuples) so dedup_lib's helpers can use row['filepath'].
+    # Row still supports integer indexing and unpacking, so the rest of this
+    # module is unaffected. Without it every post-download duplicate check
+    # died with "tuple indices must be integers".
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=60000")
+    except sqlite3.OperationalError:
+        pass
+    return conn
+
+
 def init_database():
     DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DATABASE_PATH)
+    conn = db_connect()
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS tracks
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, artist TEXT, track TEXT, album TEXT,
@@ -325,7 +346,7 @@ def init_database():
     log('Database initialized')
 
 def get_last_check_time():
-    conn = sqlite3.connect(DATABASE_PATH)
+    conn = db_connect()
     c = conn.cursor()
     c.execute("SELECT value FROM daemon_state WHERE key='last_check_time'")
     result = c.fetchone()
@@ -333,7 +354,7 @@ def get_last_check_time():
     return int(result[0]) if result else int(time.time())
 
 def set_last_check_time(timestamp):
-    conn = sqlite3.connect(DATABASE_PATH)
+    conn = db_connect()
     c = conn.cursor()
     c.execute("INSERT OR REPLACE INTO daemon_state (key, value) VALUES ('last_check_time', ?)", (str(timestamp),))
     conn.commit()
@@ -341,7 +362,7 @@ def set_last_check_time(timestamp):
 
 def get_last_auth_alert():
     """Get timestamp of last auth alert to avoid spamming."""
-    conn = sqlite3.connect(DATABASE_PATH)
+    conn = db_connect()
     c = conn.cursor()
     c.execute("SELECT value FROM daemon_state WHERE key='last_auth_alert'")
     result = c.fetchone()
@@ -349,7 +370,7 @@ def get_last_auth_alert():
     return int(result[0]) if result else 0
 
 def set_last_auth_alert(timestamp):
-    conn = sqlite3.connect(DATABASE_PATH)
+    conn = db_connect()
     c = conn.cursor()
     c.execute("INSERT OR REPLACE INTO daemon_state (key, value) VALUES ('last_auth_alert', ?)", (str(timestamp),))
     conn.commit()
@@ -357,7 +378,7 @@ def set_last_auth_alert(timestamp):
 
 def record_failed_download(artist, album, error_msg):
     """Record a failed download for later retry."""
-    conn = sqlite3.connect(DATABASE_PATH)
+    conn = db_connect()
     c = conn.cursor()
     c.execute("""INSERT INTO failed_downloads (artist, album, fail_count, first_failed, last_failed, last_error)
                  VALUES (?, ?, 1, datetime('now'), datetime('now'), ?)
@@ -369,7 +390,7 @@ def record_failed_download(artist, album, error_msg):
 
 def get_failed_downloads_for_retry():
     """Get downloads that failed but haven't exceeded retry limit."""
-    conn = sqlite3.connect(DATABASE_PATH)
+    conn = db_connect()
     c = conn.cursor()
     c.execute("""SELECT artist, album, fail_count FROM failed_downloads
                  WHERE fail_count < ? ORDER BY last_failed ASC LIMIT ?""", (MAX_RETRIES, RETRY_BATCH))
@@ -379,7 +400,7 @@ def get_failed_downloads_for_retry():
 
 def clear_failed_download(artist, album):
     """Remove from failed downloads after successful download."""
-    conn = sqlite3.connect(DATABASE_PATH)
+    conn = db_connect()
     c = conn.cursor()
     c.execute("DELETE FROM failed_downloads WHERE LOWER(artist)=LOWER(?) AND LOWER(album)=LOWER(?)", (artist, album))
     conn.commit()
@@ -422,7 +443,7 @@ def fetch_recent_scrobbles(since_timestamp, max_pages=5):
         return []
 
 def update_play_counts(scrobbles):
-    conn = sqlite3.connect(DATABASE_PATH)
+    conn = db_connect()
     c = conn.cursor()
     tracks_to_download = []
     for scrobble in scrobbles:
@@ -477,7 +498,7 @@ class LibraryChecker:
 
     def _load_download_history(self):
         try:
-            conn = sqlite3.connect(DATABASE_PATH)
+            conn = db_connect()
             c = conn.cursor()
             c.execute("SELECT lower(artist), lower(album) FROM downloaded_albums")
             for artist, album in c.fetchall():
@@ -529,7 +550,7 @@ class LibraryChecker:
         if file_count is None:
             file_count = count_local_audio_files(artist, album)
         try:
-            conn = sqlite3.connect(DATABASE_PATH)
+            conn = db_connect()
             c = conn.cursor()
             # Insert if missing (preserves UNIQUE constraint); always update
             # file_count so the column reflects reality after each download.
@@ -600,7 +621,7 @@ def download_album(artist, album, checker, min_tracks=2):
             # Post-download dedup check: fingerprint new files, flag audio-identical
             # matches against existing library. Safe no-op if dedup_lib missing.
             try:
-                dedup_conn = sqlite3.connect(DATABASE_PATH)
+                dedup_conn = db_connect()
                 post_download_dedup_check(dedup_conn, artist, album)
                 dedup_conn.close()
             except Exception as e:
@@ -703,7 +724,7 @@ def retry_failed_downloads(checker):
 
 def notify_permanently_failed():
     """Notify about albums that hit MAX_RETRIES and won't be retried anymore."""
-    conn = sqlite3.connect(DATABASE_PATH)
+    conn = db_connect()
     c = conn.cursor()
     c.execute("""SELECT artist, album, fail_count, last_error FROM failed_downloads
                  WHERE fail_count >= ? ORDER BY last_failed DESC""", (MAX_RETRIES,))
@@ -714,7 +735,7 @@ def notify_permanently_failed():
         return
 
     # Only notify once per 24h for permanent failures
-    state_conn = sqlite3.connect(DATABASE_PATH)
+    state_conn = db_connect()
     state_cur = state_conn.cursor()
     state_cur.execute("SELECT value FROM daemon_state WHERE key='last_permanent_alert'")
     row = state_cur.fetchone()
@@ -730,7 +751,7 @@ def notify_permanently_failed():
     msg = f"{len(permanent)} album(s) permanently failed:\n" + "\n".join(lines)
     notify('Albums Permanently Failed', msg, 'x', 'high')
 
-    state_conn = sqlite3.connect(DATABASE_PATH)
+    state_conn = db_connect()
     state_cur = state_conn.cursor()
     state_cur.execute("INSERT OR REPLACE INTO daemon_state (key, value) VALUES ('last_permanent_alert', ?)",
                       (str(int(time.time())),))
@@ -774,7 +795,7 @@ def check_album_watch(checker):
     a week. Returns the number of albums downloaded.
     """
     now = time.time()
-    conn = sqlite3.connect(DATABASE_PATH)
+    conn = db_connect()
     c = conn.cursor()
     c.execute("SELECT artist, track_title FROM album_watch "
               "WHERE added IS NOT NULL AND (julianday('now') - julianday(added)) * 86400 > ?", (WATCH_MAX_AGE,))
@@ -817,7 +838,7 @@ for a in results.artists.items[:3]:
     print(f"ARTIST|{a.id}|{a.name}")
 '''
         result = subprocess.run([TIDDL_PYTHON, "-c", code], capture_output=True, text=True, timeout=15)
-        conn_mark = sqlite3.connect(DATABASE_PATH)
+        conn_mark = db_connect()
         conn_mark.execute("UPDATE album_watch SET check_count = check_count + 1, last_checked = ? "
                           "WHERE artist = ? AND track_title = ?", (now, artist, watched_single))
         conn_mark.commit()
@@ -881,7 +902,7 @@ for a in results.items[:50]:
                 found_count += 1
                 notify('Watch Album Downloaded', f'{artist} - {album_title} (full album)', 'headphones,star')
                 # Remove only the matched watch entry, not all entries for this artist
-                conn2 = sqlite3.connect(DATABASE_PATH)
+                conn2 = db_connect()
                 conn2.execute("DELETE FROM album_watch WHERE artist = ? AND track_title = ?", (artist, watched_single))
                 conn2.commit()
                 conn2.close()
