@@ -85,7 +85,13 @@ def setup_logger(name: str, filename: Optional[str] = None, level: int = logging
 # --- ntfy -------------------------------------------------------------------
 def notify(title: str, message: str, tags: str = "musical_note", priority: str = "default",
            url: Optional[str] = None, logger: Optional[logging.Logger] = None) -> bool:
-    """POST a notification to ntfy. Never raises."""
+    """POST a notification to ntfy. Never raises.
+
+    Suppressed under pytest: tests exercise the download path and were
+    pushing real "Duplicate Downloaded" alerts to the phone on every run.
+    """
+    if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("MUSICLIB_NO_NOTIFY"):
+        return False
     try:
         req = urllib.request.Request((url or NTFY_URL), data=message.encode("utf-8"), method="POST")
         req.add_header("Title", title)
