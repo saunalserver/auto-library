@@ -1,0 +1,9 @@
+[Unit]
+Description=Discovery downloads from Last.fm 7-day top artists + similar artists
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/saunalserver/projects/tidal_auto_monitor
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/flock -w 1800 %t/tidal-monitor.lock /usr/bin/python3 /home/saunalserver/projects/tidal_auto_monitor/automations/discovery_recommendations.py
+TimeoutStartSec=3h

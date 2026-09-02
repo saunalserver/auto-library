@@ -71,21 +71,18 @@ def test_smart_download_similarity_thresholds():
 
 
 def test_pitchfork_selects_url_pattern():
-    """find_selects_url regex should match the known article URL format.
-
-    Guards against a refactor breaking the news-page link extraction.
-    """
-    import re
+    """find_selects_article's news-page fallback must accept /news/ and /story/ links."""
+    import pitchfork_selects as p
 
     sample_html = """
     <a href="/news/some-other-article">Other</a>
     <p>Read more about Pitchfork selects this week.</p>
     <a href="/news/charli-xcx-this-weeks-pitchfork-selects-playlist/">Selects</a>
+    <a href="/story/ice-spice-this-weeks-pitchfork-selects-playlist/">Selects</a>
     """
-    pattern = r'href="(/news/[^"]*)"'
-    matches = [m.group(1) for m in re.finditer(pattern, sample_html)]
-    selects = [m for m in matches if "selects" in sample_html.lower()]
-    assert selects, "Expected to find a selects link"
+    links = p._extract_selects_links(sample_html)
+    assert "/news/charli-xcx-this-weeks-pitchfork-selects-playlist/" in links
+    assert "/story/ice-spice-this-weeks-pitchfork-selects-playlist/" in links
 
 
 def test_smart_download_normalize_handles_unicode():

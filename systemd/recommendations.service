@@ -1,0 +1,9 @@
+[Unit]
+Description=Build the "Weekly Discoveries" Navidrome playlist from similar artists already in the library
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/saunalserver/projects/tidal_auto_monitor
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /home/saunalserver/projects/tidal_auto_monitor/automations/weekly_playlist.py
+TimeoutStartSec=20min

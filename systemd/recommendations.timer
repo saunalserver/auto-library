@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly Discoveries playlist — Sunday 07:00 (after discovery downloads)
+
+[Timer]
+OnCalendar=Sun *-*-* 07:00:00
+Persistent=true
+Unit=recommendations.service
+
+[Install]
+WantedBy=timers.target

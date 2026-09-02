@@ -61,6 +61,14 @@ def compare_library(conn: sqlite3.Connection) -> int:
     prot_cur = conn.execute("SELECT filepath FROM dedup_protections")
     protected = {r[0] for r in prot_cur.fetchall()}
 
+    # Pairs already recorded (any status except deleted) — the weekly scan must
+    # not re-add the same finding under a fresh group_id every Monday.
+    known_pairs = {
+        (r[0], r[1]) for r in conn.execute(
+            "SELECT filepath, matched_path FROM dedup_findings WHERE status != 'deleted'"
+        ).fetchall()
+    }
+
     inserted = 0
     now = time.time()
     for (n_artist, n_title), rows in buckets.items():
@@ -73,6 +81,8 @@ def compare_library(conn: sqlite3.Connection) -> int:
                 fp_b = _row_to_fp(b)
                 sim = compare_fingerprints(fp_a, fp_b)
                 if sim < SIMILARITY_THRESHOLD:
+                    continue
+                if (a["filepath"], b["filepath"]) in known_pairs or (b["filepath"], a["filepath"]) in known_pairs:
                     continue
                 group_id = str(uuid.uuid4())
                 for path_row, matched in [(a, b), (b, a)]:

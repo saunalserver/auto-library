@@ -26,8 +26,12 @@ DEFAULT_DB = "database/monitor.db"
 
 
 def _connect(db_path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=60)
     conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError:
+        pass
     init_dedup_schema(conn)
     return conn
 
@@ -228,10 +232,17 @@ def cmd_unprotect(args) -> int:
 
 
 def cmd_scan(args) -> int:
+    import logging
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
     conn = _connect(args.db)
-    n = dedup_scan.scan_library(conn, Path(args.root))
+    try:
+        n = dedup_scan.scan_library(conn, Path(args.root), workers=args.workers, prune=True)
+    except dedup_scan.LibraryUnavailable as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        conn.close()
+        return 2
     findings = dedup_state.compare_library(conn)
-    print(f"Scanned {n} files, {findings} new findings")
+    print(f"Fingerprinted {n} files, {findings} new findings")
     conn.close()
     return 0
 
@@ -257,8 +268,12 @@ def cmd_ntfy_summary(args) -> int:
     row = cur.fetchone()
     n = row["n"]
     bytes_reclaimable = row["bytes"]
-    msg = f"Dedup pending: {n} findings, {bytes_reclaimable / 1e9:.1f} GB reclaimable"
+    # Each duplicate pair is stored as two rows (one per file); report pairs.
+    msg = (f"Dedup: {n // 2} duplicate pair(s) pending review, {bytes_reclaimable / 2 / 1e9:.1f} GB reclaimable. "
+           f"Review: dedup_tool.py report")
     print(msg)
+    if n == 0:
+        return 0
     if args.ntfy_url:
         try:
             req = urllib.request.Request(args.ntfy_url, data=msg.encode("utf-8"), method="POST")
@@ -310,6 +325,7 @@ def main(argv: list[str] | None = None) -> int:
     p_scan = sub.add_parser("scan", help="Fingerprint library + run comparison")
     _add_db_arg(p_scan)
     p_scan.add_argument("--root", default="/mnt/photos/flac_music")
+    p_scan.add_argument("--workers", type=int, default=4, help="parallel fpcalc processes")
     p_scan.set_defaults(func=cmd_scan)
 
     p_protect = sub.add_parser("protect", help="Mark a file as never-to-delete")

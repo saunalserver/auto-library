@@ -1,0 +1,10 @@
+[Unit]
+Description=Pitchfork Selects — daily check at 07:30 (article appears Monday afternoon; no-op if already processed)
+
+[Timer]
+OnCalendar=*-*-* 07:30:00
+Persistent=true
+Unit=pitchfork-selects.service
+
+[Install]
+WantedBy=timers.target

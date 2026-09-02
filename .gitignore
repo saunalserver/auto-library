@@ -27,3 +27,6 @@ logs/
 *.pem
 *.key
 credentials.json
+
+# generated weekly by discovery_recommendations.py
+discovery-queue.txt

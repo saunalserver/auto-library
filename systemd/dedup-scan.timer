@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly audio-fingerprint dedup scan — Monday 04:00
+
+[Timer]
+OnCalendar=Mon *-*-* 04:00:00
+Persistent=true
+Unit=dedup-scan.service
+
+[Install]
+WantedBy=timers.target
