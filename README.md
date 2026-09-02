@@ -16,7 +16,7 @@ symlinked into `~/.config/systemd/user/` by `systemd/install.sh`.
 | `discovery` | Sun 06:00 | `automations/discovery_recommendations.py` | Up to 10 albums/week from your 7-day top artists and Last.fm "similar artists". |
 | `recommendations` | Sun 07:00 | `automations/weekly_playlist.py` | Navidrome playlist **Weekly Discoveries**: 25 unplayed tracks by artists similar to what you played this week. |
 | `pitchfork-selects` | daily 07:30 | `automations/pitchfork_selects.py` | Finds the week's *Pitchfork Selects* article (RSS), downloads missing albums, builds playlist **Pitchfork Selects YYYY-MM-DD**. Each article is processed once. |
-| `lyrics` | daily 03:00 | `automations/fetch_lyrics.py` | Fetches `.lrc` sidecars from LRCLIB for tracks without lyrics, newest first (200/run). Remembers misses. |
+| `lyrics` | daily 03:00 | `automations/fetch_lyrics.py` | Fetches `.lrc` sidecars from LRCLIB for tracks without lyrics, newest first (400/run). Remembers misses. |
 | `dedup-scan` | Mon 04:00 | `dedup_tool.py scan` | Fingerprints the library (`fpcalc`) and records audio-identical duplicates for review. Never deletes anything by itself. |
 
 All scripts share `musiclib.py` (config, rotating logs, ntfy, Subsonic API with

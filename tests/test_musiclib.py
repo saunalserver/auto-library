@@ -74,3 +74,12 @@ def test_find_album_dirs_ignores_chars_tiddl_strips(tmp_path):
     (tmp_path / "Turnstile" / "NEVER ENOUGH VERSIONS" / "01 - x.flac").write_bytes(b"x")
     assert m.count_audio_files("Turnstile", "NEVER ENOUGH: VERSIONS", root=tmp_path) == 1
     assert m.count_audio_files("PinkPantheress", "Fancy Some More?", root=tmp_path) == 0
+
+
+def test_notify_is_suppressed_under_pytest():
+    """Tests must never push to the user's phone.
+
+    The dedup integration test exercises the "duplicate downloaded" branch;
+    before this guard every `pytest` run sent a real ntfy alert.
+    """
+    assert m.notify("test", "should not be sent") is False

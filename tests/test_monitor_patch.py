@@ -44,6 +44,9 @@ def test_post_download_fingerprint_detects_dup(tmp_path, monkeypatch):
     # Point monitor at our test paths
     monkeypatch.setattr(monitor, "MUSIC_ROOT", music_root)
     monkeypatch.setattr(monitor, "DATABASE_PATH", db)
+    # Belt and braces: musiclib.notify already no-ops under pytest, but this
+    # test hits the "duplicate found" branch that pushes to the phone.
+    monkeypatch.setattr(monitor, "notify", lambda *a, **k: None)
 
     findings_before = conn.execute("SELECT COUNT(*) FROM dedup_findings").fetchone()[0]
     monitor.post_download_dedup_check(conn, "Artist", "NewAlbum")
