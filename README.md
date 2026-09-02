@@ -56,7 +56,7 @@ Notifications go to ntfy topic `music` (dedup summary to `music-dedup`).
 2. `cp .env.example .env` and fill in Last.fm and Navidrome credentials.
 3. `tiddl auth login` once; the automations refresh the token themselves.
 4. `./systemd/install.sh`
-5. `python3 -m pytest tests` (56 tests, no network needed except one Tidal auth check).
+5. `python3 -m pytest tests` (63 tests; no network needed except one Tidal auth check).
 
 ## Gotchas
 
