@@ -35,7 +35,7 @@ import musiclib as m  # noqa: E402
 
 PITCHFORK_RSS = "https://pitchfork.com/feed/rss"
 PITCHFORK_NEWS = "https://pitchfork.com/news/"
-UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) tidal-monitor"}
+UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) auto-library"}
 STATE_KEY = "pitchfork_last_url"
 
 TIDDL_PYTHON = m.TIDDL_PYTHON

@@ -17,4 +17,4 @@ systemctl --user daemon-reload
 for t in "$HERE"/*.timer; do
     systemctl --user enable --now "$(basename "$t")"
 done
-systemctl --user list-timers --all | grep -E 'tidal|discovery|recommend|lyrics|pitchfork|dedup|NEXT'
+systemctl --user list-timers --all | grep -E 'auto-library|discovery|recommend|lyrics|pitchfork|dedup|NEXT'

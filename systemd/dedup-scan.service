@@ -3,10 +3,10 @@ Description=Fingerprint the library (fpcalc) and record duplicate findings
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/saunalserver/projects/tidal_auto_monitor
+WorkingDirectory=/home/saunalserver/projects/auto-library
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/bin/python3 /home/saunalserver/projects/tidal_auto_monitor/dedup_tool.py scan --workers 4
-ExecStartPost=/usr/bin/python3 /home/saunalserver/projects/tidal_auto_monitor/dedup_tool.py ntfy-summary
+ExecStart=/usr/bin/python3 /home/saunalserver/projects/auto-library/dedup_tool.py scan --workers 4
+ExecStartPost=/usr/bin/python3 /home/saunalserver/projects/auto-library/dedup_tool.py ntfy-summary
 TimeoutStartSec=6h
 Nice=15
 IOSchedulingClass=idle

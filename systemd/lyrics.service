@@ -3,8 +3,8 @@ Description=Fetch missing lyrics from LRCLIB for library tracks
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/saunalserver/projects/tidal_auto_monitor
+WorkingDirectory=/home/saunalserver/projects/auto-library
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/bin/python3 /home/saunalserver/projects/tidal_auto_monitor/automations/fetch_lyrics.py --limit 400
+ExecStart=/usr/bin/python3 /home/saunalserver/projects/auto-library/automations/fetch_lyrics.py --limit 400
 TimeoutStartSec=1h
 Nice=10
