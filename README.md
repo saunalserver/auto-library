@@ -99,12 +99,43 @@ Notifications go to ntfy topic `music` (dedup summary to `music-dedup`).
 
 ## Setup
 
-1. `pip install -r requirements.txt` (system Python is fine; `fpcalc`, `ffmpeg`,
-   `docker` and `tiddl` (pipx) must be on the PATH).
-2. `cp .env.example .env` and fill in Last.fm and Navidrome credentials.
-3. `tiddl auth login` once; the automations refresh the token themselves.
-4. `./systemd/install.sh`
-5. `python3 -m pytest tests` (74 tests; no network needed except one Tidal auth check).
+### 1. Prerequisites
+
+- Python 3 (system Python is fine) + `pip install -r requirements.txt`
+- External tools on the PATH: `fpcalc` (Chromaprint, for dedup), `ffmpeg`,
+  `docker` (Navidrome DB access), and [`tiddl`](https://github.com/oskvr37/tiddl)
+  installed via `pipx install tiddl`
+- A [Navidrome](https://www.navidrome.org) server with your music mounted,
+  and a scrobbling client feeding your Last.fm account
+
+### 2. API keys & credentials
+
+Copy `.env.example` to `.env` and fill in:
+
+| Variable | What it's for | Where to get it |
+|---|---|---|
+| `LASTFM_API_KEY` | Read your scrobbles, top artists, similar artists | Create a free API account at **https://www.last.fm/api/accounts/create** (instant, no review). Use the “API key” value. |
+| `LASTFM_USERNAME` | Whose scrobbles to watch | Your own Last.fm username — the account your player scrobbles to. |
+| `SUBSONIC_USER` / `SUBSONIC_PASS` | Playlist creation, library rescans, lyrics lookups via Navidrome's Subsonic API | The login of your **own Navidrome server** (Admin → Users). Any user with playlist permissions works. |
+
+Optional overrides (defaults in `.env.example`): `SUBSONIC_URL`, `MUSIC_ROOT`,
+`LIBRARY_MOUNT`, `NTFY_URL`, `TIDDL_BINARY`, `TIDDL_PYTHON`, `TIDDL_CONFIG`.
+
+**Tidal access** needs no key in `.env`: run `tiddl auth login` once and complete
+the browser login. The token is stored in `~/tiddl.json` and refreshed
+automatically by the automations. **Notifications** need no key either — any
+[ntfy](https://ntfy.sh) topic URL works (self-hosted or ntfy.sh).
+
+### 3. Install & verify
+
+```bash
+./systemd/install.sh      # symlinks user units + timers, enables them
+python3 -m pytest tests   # 74 tests; no network needed except one Tidal auth check
+systemctl --user list-timers
+```
+
+Then play a track 3 times and watch `journalctl --user -u auto-library` — or
+just run `python3 monitor.py` once by hand.
 
 ## Tests
 
