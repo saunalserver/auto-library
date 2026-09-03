@@ -1,4 +1,4 @@
-"""Shared helpers for the tidal_auto_monitor automations.
+"""Shared helpers for the auto-library automations.
 
 Everything that more than one automation needs lives here so behaviour is
 consistent: config from .env, rotating log files, ntfy, the Subsonic API
@@ -194,7 +194,7 @@ class Subsonic:
     """Minimal Subsonic client for Navidrome using salted-token auth."""
 
     def __init__(self, url: str = SUBSONIC_URL, user: str = SUBSONIC_USER, password: str = SUBSONIC_PASS,
-                 client: str = "tidal-monitor", timeout: int = 15):
+                 client: str = "auto-library", timeout: int = 15):
         self.url = url.rstrip("/")
         self.user = user
         self.password = password
@@ -284,7 +284,7 @@ def lastfm_call(params: dict, timeout: int = 25) -> Optional[dict]:
     merged = {"api_key": LASTFM_API_KEY, "format": "json"}
     merged.update(params)
     url = f"{LASTFM_API_URL}?{urllib.parse.urlencode(merged)}"
-    req = urllib.request.Request(url, headers={"User-Agent": "tidal-monitor/2.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "auto-library/2.0"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))

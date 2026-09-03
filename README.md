@@ -1,4 +1,4 @@
-# tidal-monitor
+# Auto Library
 
 **An autonomous, listening-driven music library.** Six systemd automations grow
 and maintain a personal FLAC library (~1,900 albums, ~7,700 tracks) from what is
@@ -31,7 +31,7 @@ Everything runs as **user-level systemd timers** (no sudo). Unit files are in
 
 | Timer | When | Script | Does |
 |---|---|---|---|
-| `tidal-monitor` | every 6 h (00:10 06:10 12:10 18:10) | `monitor.py` | Last.fm scrobbles → any track played 3× gets its album downloaded. Retries failures, watches singles for full albums, alerts on auth problems. |
+| `auto-library` | every 6 h (00:10 06:10 12:10 18:10) | `monitor.py` | Last.fm scrobbles → any track played 3× gets its album downloaded. Retries failures, watches singles for full albums, alerts on auth problems. |
 | `discovery` | Sun 06:00 | `automations/discovery_recommendations.py` | Up to 10 albums/week from your 7-day top artists and Last.fm "similar artists". |
 | `recommendations` | Sun 07:00 | `automations/weekly_playlist.py` | Navidrome playlist **Weekly Discoveries**: 25 unplayed tracks by artists similar to what you played this week. |
 | `pitchfork-selects` | daily 07:30 | `automations/pitchfork_selects.py` | Finds the week's *Pitchfork Selects* article (RSS), downloads missing albums, builds playlist **Pitchfork Selects YYYY-MM-DD**. Each article is processed once. |
@@ -68,8 +68,8 @@ readable instead of downloading into a dead mount).
 
 ```bash
 systemctl --user list-timers                     # what runs next
-journalctl --user -u tidal-monitor -n 50         # logs (also in logs/*.log, rotated)
-systemctl --user start tidal-monitor.service     # run one now
+journalctl --user -u auto-library -n 50         # logs (also in logs/*.log, rotated)
+systemctl --user start auto-library.service     # run one now
 python3 monitor.py                               # or run directly
 
 python3 automations/discovery_recommendations.py --dry-run

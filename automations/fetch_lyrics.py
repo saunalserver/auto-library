@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import musiclib as m  # noqa: E402
 
 LRCLIB = "https://lrclib.net/api"
-USER_AGENT = "tidal-monitor-lyrics/2.0 (https://github.com/saunalserver/tidal-monitor)"
+USER_AGENT = "auto-library-lyrics/2.0 (https://github.com/saunalserver/auto-library)"
 DELAY_SECONDS = 0.5
 DURATION_TOLERANCE = 4.0  # seconds, for /api/search fallback
 

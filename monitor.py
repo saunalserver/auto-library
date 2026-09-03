@@ -46,7 +46,7 @@ RETRY_BATCH = 10          # failed albums retried per run
 WATCH_INTERVAL = 7 * 86400   # re-check a watched artist for a full album weekly...
 WATCH_MAX_AGE = 180 * 86400  # ...for up to 6 months
 
-_logger = m.setup_logger('tidal-monitor', LOG_FILE.name)
+_logger = m.setup_logger('auto-library', LOG_FILE.name)
 _LEVELS = {'INFO': logging.INFO, 'WARNING': logging.WARNING, 'ERROR': logging.ERROR}
 
 def log(message, level='INFO'):
@@ -986,7 +986,7 @@ def main():
 
     if downloads:
         try:
-            m.Subsonic(client="tidal-monitor").start_scan()
+            m.Subsonic(client="auto-library").start_scan()
             log(f"Navidrome rescan triggered ({downloads} new album(s))")
         except Exception as e:
             log(f"Navidrome rescan failed: {e}", "WARNING")
