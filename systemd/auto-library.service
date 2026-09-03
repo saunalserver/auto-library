@@ -1,5 +1,5 @@
 [Unit]
-Description=TIDAL Auto-Download Monitor (Last.fm scrobbles -> tiddl)
+Description=Auto Library monitor (Last.fm scrobbles -> Tidal downloads)
 
 [Service]
 Type=oneshot
