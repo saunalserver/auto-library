@@ -12,6 +12,16 @@ on a home server as user-level systemd timers, and recovers by itself from the
 things that actually go wrong (unplugged drives, dead API tokens, upstream
 bugs).
 
+**Who it's for:** you already run [Navidrome](https://www.navidrome.org) and
+scrobble to Last.fm — this is the missing piece that fills the library from
+what you actually listen to.
+
+A real run from the homelab — environment checks, a retry of yesterday's
+failures, then the weekly album-watch sweep (13 albums, each verified on disk
+before being recorded):
+
+![Terminal log of an auto-library run: albums downloaded and verified](docs/img/run.png)
+
 ```
 Last.fm scrobbles ─► monitor.py ─► smart_download.py ─► tiddl ─► FLAC library ─► Navidrome
 Last.fm top/similar ► discovery_recommendations.py ──┘                        │
@@ -144,4 +154,6 @@ and scan logic, the monitor's tiddl patch check, Pitchfork article matching
 (collaborations, punctuation variants), and a smoke test per automation. The
 suite never sends notifications.
 
-MIT
+## License
+
+[MIT](LICENSE)
