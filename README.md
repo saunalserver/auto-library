@@ -1,12 +1,31 @@
-# Tidal Auto-Monitor
+# tidal-monitor
 
-Personal music automation for a Navidrome library. Listens to Last.fm, downloads
-what you actually play from Tidal (via `tiddl`), keeps the library tidy, and
-builds weekly playlists.
+**An autonomous, listening-driven music library.** Six systemd automations grow
+and maintain a personal FLAC library (~1,900 albums, ~7,700 tracks) from what is
+actually listened to — no manual downloading, no manual upkeep.
 
-Everything lives in `/home/saunalserver/projects/tidal_auto_monitor` and runs as
-**user-level systemd timers** (no sudo). Unit files are in `systemd/` and
-symlinked into `~/.config/systemd/user/` by `systemd/install.sh`.
+The system watches Last.fm scrobbles and downloads the albums that earn it
+(3 plays), pulls weekly discovery from top and similar artists, builds two
+playlists on its own (one from Pitchfork's RSS), backfills lyrics nightly, and
+keeps the library clean with audio-fingerprint dedup. Everything runs unattended
+on a home server as user-level systemd timers, and recovers by itself from the
+things that actually go wrong (unplugged drives, dead API tokens, upstream
+bugs).
+
+```
+Last.fm scrobbles ─► monitor.py ─► smart_download.py ─► tiddl ─► FLAC library ─► Navidrome
+Last.fm top/similar ► discovery_recommendations.py ──┘                        │
+Pitchfork RSS ──────► pitchfork_selects.py ─────────┘           playlists ◄───┤
+Last.fm similar ────► weekly_playlist.py (library only) ─────── playlist ◄────┤
+LRCLIB ─────────────► fetch_lyrics.py (.lrc sidecars) ────────────────────────┤
+fpcalc ─────────────► dedup_tool.py scan (findings only, never deletes)       │
+                    shared core: musiclib.py — config, logs, ntfy, Subsonic,
+                    drive guard, Tidal token refresh
+                    state: database/monitor.db (SQLite, WAL)   alerts: ntfy
+```
+
+Everything runs as **user-level systemd timers** (no sudo). Unit files are in
+`systemd/` and symlinked into `~/.config/systemd/user/` by `systemd/install.sh`.
 
 ## What runs
 
@@ -21,8 +40,29 @@ symlinked into `~/.config/systemd/user/` by `systemd/install.sh`.
 
 All scripts share `musiclib.py` (config, rotating logs, ntfy, Subsonic API with
 token auth, Navidrome DB access, Tidal token refresh, and the **music-drive
-guard**: every automation aborts loudly if `/mnt/photos` is not mounted or
+guard**: every automation aborts loudly if the library drive is not mounted or
 readable instead of downloading into a dead mount).
+
+## Built for the real world
+
+- **Success is verified, not assumed.** `tiddl` exits 0 even when nothing was
+  written (e.g. drive offline) — every downloader counts files on disk before
+  recording a success.
+- **The library drive is sometimes unplugged.** Automations detect that, skip
+  the run *without advancing their last-checked timestamp*, and send one ntfy
+  alert per 6 h. Nothing is missed; everything resumes when it is plugged back
+  in.
+- **Upstream bugs are detected, not suffered.** `tiddl`'s `exceptions.py` needs
+  a local `**kwargs` patch (upstream #351); `monitor.py` verifies it every run
+  and alerts if a pipx upgrade removed it.
+- **Names don't match across services.** Tidal titles differ from Last.fm's
+  (singles, deluxe editions, casing), so folder lookups are case-insensitive
+  and fall back to the matched Tidal title.
+- **Duplicates are classified, not deleted.** An audio-identical pair is not
+  automatically waste — see the classification table below.
+- **State survives everything** in `database/monitor.db` (SQLite, WAL): play
+  counts, downloaded albums, failed downloads and retries, album watch list,
+  lyrics attempts, fingerprints and dedup findings.
 
 ## Day to day
 
@@ -55,10 +95,6 @@ automatically waste:
 
 Only `same-album` counts toward the "reclaimable" figure in the ntfy summary.
 
-State is in `database/monitor.db` (SQLite, WAL): play counts, downloaded
-albums, failed downloads and retries, album watch list, lyrics attempts,
-fingerprints and dedup findings.
-
 Notifications go to ntfy topic `music` (dedup summary to `music-dedup`).
 
 ## Setup
@@ -68,18 +104,13 @@ Notifications go to ntfy topic `music` (dedup summary to `music-dedup`).
 2. `cp .env.example .env` and fill in Last.fm and Navidrome credentials.
 3. `tiddl auth login` once; the automations refresh the token themselves.
 4. `./systemd/install.sh`
-5. `python3 -m pytest tests` (63 tests; no network needed except one Tidal auth check).
+5. `python3 -m pytest tests` (74 tests; no network needed except one Tidal auth check).
 
-## Gotchas
+## Tests
 
-- `tiddl` exits 0 even when nothing was written (e.g. drive offline). Every
-  downloader therefore counts files on disk before recording a success.
-- `tiddl`'s `exceptions.py` needs a local `**kwargs` patch (upstream #351);
-  `monitor.py` verifies it every run and alerts if a pipx upgrade removed it.
-- Tidal titles differ from Last.fm's (singles, deluxe editions, casing), so
-  folder lookups are case-insensitive and fall back to the matched Tidal title.
-- The library drive is sometimes unplugged. The automations detect that, skip
-  the run without advancing their last-checked timestamp, and send one ntfy
-  alert per 6 h. Nothing is missed; everything resumes when it is plugged back in.
+`tests/` covers the fragile parts: album-edition ranking, dedup classification
+and scan logic, the monitor's tiddl patch check, Pitchfork article matching
+(collaborations, punctuation variants), and a smoke test per automation. The
+suite never sends notifications.
 
 MIT
