@@ -39,6 +39,17 @@ LIBRARY_MOUNT = Path(os.getenv("LIBRARY_MOUNT", "/mnt/photos"))
 DB_PATH = Path(os.getenv("MONITOR_DB", str(PROJECT_ROOT / "database" / "monitor.db")))
 LOG_DIR = Path(os.getenv("LOG_DIR", str(PROJECT_ROOT / "logs")))
 NTFY_URL = os.getenv("NTFY_URL", "http://localhost:8093/music")
+
+
+def _ntfy_auth_header() -> Optional[str]:
+    """Bearer token for the self-hosted ntfy (deny-all); ~/.config/ntfy-token."""
+    tok = os.getenv("NTFY_TOKEN", "")
+    if not tok:
+        try:
+            tok = open(os.path.expanduser("~/.config/ntfy-token")).read().strip()
+        except OSError:
+            return None
+    return f"Bearer {tok}" if tok else None
 SUBSONIC_URL = os.getenv("SUBSONIC_URL", "http://localhost:4534").rstrip("/")
 SUBSONIC_USER = os.getenv("SUBSONIC_USER", "saunalserver")
 SUBSONIC_PASS = os.getenv("SUBSONIC_PASS", "")
@@ -94,6 +105,9 @@ def notify(title: str, message: str, tags: str = "musical_note", priority: str =
         return False
     try:
         req = urllib.request.Request((url or NTFY_URL), data=message.encode("utf-8"), method="POST")
+        _auth = _ntfy_auth_header()
+        if _auth:
+            req.add_header("Authorization", _auth)
         req.add_header("Title", title)
         req.add_header("Tags", tags)
         req.add_header("Priority", priority)

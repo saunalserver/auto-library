@@ -326,6 +326,9 @@ def cmd_ntfy_summary(args) -> int:
     if args.ntfy_url:
         try:
             req = urllib.request.Request(args.ntfy_url, data=msg.encode("utf-8"), method="POST")
+            _tok = os.getenv("NTFY_TOKEN", "") or open(os.path.expanduser("~/.config/ntfy-token")).read().strip()
+            if _tok:
+                req.add_header("Authorization", f"Bearer {_tok}")
             req.add_header("Title", "Music Dedup Status")
             req.add_header("Tags", "headphones,magnifying_glass")
             urllib.request.urlopen(req, timeout=5)
