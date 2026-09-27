@@ -1,5 +1,5 @@
 [Unit]
-Description=Weekly discovery downloads — Sunday 06:00 (before the weekly playlist)
+Description=Weekly discovery suggestions — Sunday 06:00
 
 [Timer]
 OnCalendar=Sun *-*-* 06:00:00

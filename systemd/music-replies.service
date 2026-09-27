@@ -1,0 +1,14 @@
+[Unit]
+Description=Auto Library — downloads the discovery albums you pick by replying on ntfy `music`
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/saunalserver/projects/auto-library
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /home/saunalserver/projects/auto-library/automations/music_replies.py
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=default.target

@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from smart_download import album_score, base_title, edition  # noqa: E402
+from smart_download import album_score, base_title, edition, strip_artist_prefix  # noqa: E402
 
 
 def test_edition_and_base_title_parsing():
@@ -46,3 +46,28 @@ def test_unrelated_albums_still_score_low():
 def test_punctuation_only_differences_still_match():
     # Tidal sanitises characters out of titles; those are the same album.
     assert album_score("RAVEN, The Remixes", "RAVE:N, The Remixes") > 0.9
+
+
+# Real cases, 2026-09-06: the Sunday discovery run downloaded Mahler's
+# Symphony No. 2 for "Mahler: Symphony No. 5", and a 154-track
+# "Mendelssohn - Great Recordings" box for "Mendelssohn: Piano Pieces".
+
+def test_a_different_number_is_a_different_album():
+    want = "Mahler: Symphony No. 5"
+    assert album_score("Symphony No. 2 (Live)", want, "Gustav Mahler") == 0.0
+    assert album_score("Symphony No.5 in C sharp minor", want, "Gustav Mahler") > 0.5
+    assert album_score("Drop 6", "DROP 7") == 0.0
+
+
+def test_numbers_in_an_edition_do_not_count():
+    # "(2018 Remaster)" is an edition, not part of the album's name.
+    assert album_score("Hounds of Love", "Hounds of Love (2018 Remaster)") > 0.5
+
+
+def test_composer_prefix_does_not_make_unrelated_albums_similar():
+    artist = "Felix Mendelssohn"
+    assert strip_artist_prefix("Mendelssohn: Piano Pieces", artist) == "Piano Pieces"
+    assert strip_artist_prefix("Mendelssohn - Great Recordings", artist) == "Great Recordings"
+    assert album_score("Mendelssohn - Great Recordings", "Mendelssohn: Piano Pieces", artist) < 0.5
+    # A prefix that is not the artist's name is part of the title.
+    assert strip_artist_prefix("Kiss Land: Remixes", "The Weeknd") == "Kiss Land: Remixes"

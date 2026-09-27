@@ -1,10 +1,12 @@
 [Unit]
-Description=Fingerprint the library (fpcalc) and record duplicate findings
+Description=Weekly: re-download corrupt files, fingerprint the library (fpcalc), record duplicate findings
 
 [Service]
 Type=oneshot
 WorkingDirectory=/home/saunalserver/projects/auto-library
 Environment=PYTHONUNBUFFERED=1
+# Corrupt downloads first (moved out + re-downloaded), so they are not fingerprinted.
+ExecStartPre=-/usr/bin/python3 /home/saunalserver/projects/auto-library/library_cleanup.py verify --changed
 ExecStart=/usr/bin/python3 /home/saunalserver/projects/auto-library/dedup_tool.py scan --workers 4
 ExecStartPost=/usr/bin/python3 /home/saunalserver/projects/auto-library/dedup_tool.py ntfy-summary
 TimeoutStartSec=6h

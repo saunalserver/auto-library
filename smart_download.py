@@ -9,6 +9,12 @@ import os
 from difflib import SequenceMatcher
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import musiclib as m  # noqa: E402
+
+# Exit codes the callers (monitor, discovery replies) act on.
+EXIT_OK, EXIT_FAILED, EXIT_API_ERROR, EXIT_OWNED = 0, 1, 2, 3
+
 TIDDL_PYTHON = os.getenv('TIDDL_PYTHON', str(Path.home() / ".local/share/pipx/venvs/tiddl/bin/python"))
 TIDDL_BIN = os.getenv('TIDDL_BINARY', str(Path.home() / ".local/bin/tiddl"))
 
@@ -39,7 +45,32 @@ def base_title(title):
     return normalize(_EDITION_RE.sub("", (title or "").strip()))
 
 
-def album_score(candidate, wanted):
+_NUM_RE = re.compile(r"\d+")
+_PREFIX_RE = re.compile(r"^\s*([^:\-–]{1,40}?)\s*[:\-–]\s+(.+)$")
+
+
+def numbers(title):
+    """Numbers in the base title: 'Mahler: Symphony No. 5' -> {'5'}."""
+    return set(_NUM_RE.findall(base_title(title)))
+
+
+def strip_artist_prefix(title, artist):
+    """'Mendelssohn: Piano Pieces' -> 'Piano Pieces' when the artist is Felix Mendelssohn.
+
+    Classical releases prefix the composer's name, which made every album by
+    that composer look ~60% similar to every other one: 'Mendelssohn: Piano
+    Pieces' matched a 154-track 'Mendelssohn - Great Recordings' box.
+    """
+    match = _PREFIX_RE.match(title or "")
+    if not match or not artist:
+        return title
+    prefix_words = set(normalize(match.group(1)).split())
+    if prefix_words and prefix_words <= set(normalize(artist).split()):
+        return match.group(2)
+    return title
+
+
+def album_score(candidate, wanted, artist=None):
     """How well a Tidal album title matches the one we asked for, in [0, 1].
 
     Plain string similarity is not enough: asking for 'choke enough (Deluxe)'
@@ -48,7 +79,15 @@ def album_score(candidate, wanted):
     base titles agree, decide on the edition instead of on spelling:
     the same edition wins, no edition is an acceptable fallback, and a
     *different* edition is penalised.
+
+    A number in the requested title must appear in the candidate: 'Symphony
+    No. 2 (Live)' scored higher than 'Symphony No.5' for 'Mahler: Symphony
+    No. 5', and 'Drop 6' is not 'Drop 7'.
     """
+    if artist:
+        candidate, wanted = strip_artist_prefix(candidate, artist), strip_artist_prefix(wanted, artist)
+    if numbers(wanted) - numbers(candidate):
+        return 0.0
     score = similarity(candidate, wanted)
     if base_title(candidate) and base_title(candidate) == base_title(wanted):
         want_ed, have_ed = edition(wanted), edition(candidate)
@@ -169,7 +208,7 @@ def find_best_album_match(artist_name, album_name, min_tracks=2):
 
     for album in albums:
         artist_sim = similarity(album["artist"], artist_name)
-        album_sim = album_score(album["title"], album_name)
+        album_sim = album_score(album["title"], album_name, artist_name)
         combined = (artist_sim * 0.4) + (album_sim * 0.6)
 
         if artist_sim >= 0.5 and album_sim >= 0.5 and album["track_count"] >= min_tracks:
@@ -186,7 +225,7 @@ def find_best_album_match(artist_name, album_name, min_tracks=2):
 
         for album in albums:
             artist_sim = similarity(album["artist"], artist_name)
-            album_sim = album_score(album["title"], album_name)
+            album_sim = album_score(album["title"], album_name, artist_name)
             combined = (artist_sim * 0.4) + (album_sim * 0.6)
 
             if artist_sim >= 0.5 and album_sim >= 0.5 and album["track_count"] >= min_tracks:
@@ -202,7 +241,7 @@ def find_best_album_match(artist_name, album_name, min_tracks=2):
 
         for album in albums:
             artist_sim = similarity(album["artist"], artist_name)
-            album_sim = album_score(album["title"], album_name)
+            album_sim = album_score(album["title"], album_name, artist_name)
             combined = (artist_sim * 0.4) + (album_sim * 0.6)
 
             # Require higher artist match when searching just album name
@@ -246,7 +285,7 @@ def find_best_album_match(artist_name, album_name, min_tracks=2):
                 best_alt = None
                 best_alt_score = 0
                 for a in artist_albums:
-                    name_sim = album_score(a["title"], album_name)
+                    name_sim = album_score(a["title"], album_name, artist_name)
                     # Only consider albums whose name matches what we're searching for
                     if name_sim >= 0.6 and a["track_count"] >= min_tracks:
                         # Score: name similarity primary, track count bonus secondary
@@ -270,21 +309,40 @@ def find_best_album_match(artist_name, album_name, min_tracks=2):
                 return track["album_id"], track["album_title"], track["artist"], -1
             print(f"  Rejecting parent album fallback: '{track['album_title']}' vs '{album_name}' (sim={parent_sim:.0%})")
 
-    # If we had a weak album match from strategies 1-3, return it as last resort
+    # A weak match from strategies 1-3 is NOT used. It is how "Mahler: Symphony
+    # No. 5" became Symphony No. 2 — a wrong album is worse than no album.
     if best_match:
-        print(f"  Warning: accepting low-confidence match (score {best_score:.0%})")
-        return best_match["id"], best_match["title"], best_match["artist"], best_match["track_count"]
+        print(f"  Rejecting low-confidence match: {best_match['artist']} - {best_match['title']} "
+              f"(score {best_score:.0%})")
 
     return None, None, None, 0
 
-def main():
-    if len(sys.argv) < 3:
-        print("Usage: smart_download.py <artist> <album> [min_tracks]")
-        sys.exit(1)
+def owned_on_disk(artist, title, track_count):
+    """Files already on disk for the album Tidal resolved to, or 0 if it is missing/partial.
 
-    artist = sys.argv[1]
-    album = sys.argv[2]
-    min_tracks = int(sys.argv[3]) if len(sys.argv) > 3 else 2
+    Callers check ownership under the *requested* name (Last.fm's), which
+    misses the same album under another spelling: 'Symphonie Fantastique',
+    'Symphonie Fantastique op.14' and 'Berlioz: Symphonie fantastique' all
+    resolved to one Tidal album and it was downloaded three times. The folder
+    tiddl writes is named after Tidal's title, so check that one too. A
+    partial folder (fewer files than Tidal lists) is not owned — downloading
+    again fills in the missing tracks.
+    """
+    on_disk = m.count_audio_files(artist, title)
+    if on_disk and (track_count <= 0 or on_disk >= track_count):
+        return on_disk
+    return 0
+
+
+def main():
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    resolve_only = "--resolve-only" in sys.argv
+    if len(args) < 2:
+        print("Usage: smart_download.py <artist> <album> [min_tracks] [--resolve-only]")
+        sys.exit(EXIT_FAILED)
+
+    artist, album = args[0], args[1]
+    min_tracks = int(args[2]) if len(args) > 2 else 2
 
     print(f"Looking for: {artist} - {album} (min {min_tracks} tracks)")
     print("-" * 50)
@@ -295,21 +353,27 @@ def main():
         # Propagate auth/API errors cleanly so the parent monitor can detect
         # them via stderr grep instead of relying on traceback output.
         print(f"API_ERROR: {exc}", file=sys.stderr)
-        sys.exit(2)
+        sys.exit(EXIT_API_ERROR)
 
     if not album_id:
         print(f"ERROR: Could not find matching album for {artist} - {album}")
-        sys.exit(1)
+        sys.exit(EXIT_FAILED)
 
     print(f"\nBest match: {found_artist} - {found_title} ({track_count} tracks)")
     print(f"Album ID: {album_id}")
+    on_disk = owned_on_disk(found_artist, found_title, track_count)
+    if on_disk:
+        print(f"ALREADY OWNED: {found_artist} - {found_title} ({on_disk} files on disk)")
+        sys.exit(EXIT_OWNED)
+    if resolve_only:
+        sys.exit(EXIT_OK)
     print("-" * 50)
     print("Downloading...")
 
     success, output = download_album_by_id(album_id)
     print(output)
 
-    sys.exit(0 if success else 1)
+    sys.exit(EXIT_OK if success else EXIT_FAILED)
 
 if __name__ == "__main__":
     main()
