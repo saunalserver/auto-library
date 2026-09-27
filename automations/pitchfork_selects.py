@@ -31,12 +31,14 @@ from typing import List, Optional, Tuple
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+import library_cleanup  # noqa: E402
 import musiclib as m  # noqa: E402
 
 PITCHFORK_RSS = "https://pitchfork.com/feed/rss"
 PITCHFORK_NEWS = "https://pitchfork.com/news/"
 UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) auto-library"}
 STATE_KEY = "pitchfork_last_url"
+RETIRED: List[str] = []   # singles an album download made redundant this run
 
 TIDDL_PYTHON = m.TIDDL_PYTHON
 TIDDL_BIN = m.TIDDL_BIN
@@ -393,6 +395,13 @@ def download_track_album(track: P4kTrack, logger: logging.Logger) -> Tuple[Optio
     is_single = 0 < track_count <= 2
     if not download_album_by_id(album_id, logger):
         return None, None, "download_failed"
+    for d in m.find_album_dirs(artist_name, album_name):
+        library_cleanup.dedupe_renumbered(d, logger)
+    # Each article is processed once, so re-download corrupt files right away (once).
+    if library_cleanup.remove_broken_files(m.find_album_dirs(artist_name, album_name), logger):
+        if not download_album_by_id(album_id, logger) or \
+                library_cleanup.remove_broken_files(m.find_album_dirs(artist_name, album_name), logger):
+            return None, None, "download_failed"
     on_disk = m.count_audio_files(artist_name, album_name)
     if on_disk == 0:
         # tiddl said OK but nothing landed — happened for a whole week when the USB drive died.
@@ -402,6 +411,8 @@ def download_track_album(track: P4kTrack, logger: logging.Logger) -> Tuple[Optio
     if is_single:
         logger.info("    Single (%d track%s) — watching for a full album", track_count, "" if track_count == 1 else "s")
         watch_artist_for_album(artist_name, track.title)
+    else:
+        RETIRED.extend(library_cleanup.retire_superseded_singles(m.find_album_dirs(artist_name, album_name), logger))
     return album_name, artist_name, "single" if is_single else "success"
 
 
@@ -493,7 +504,8 @@ def main() -> int:
 
     if downloaded:
         logger.info("Rescanning Navidrome for %d new albums", len(downloaded))
-        sub.rescan(logger)
+        if sub.rescan(logger) and RETIRED:
+            library_cleanup.repair_playlists(logger)
         for track in to_download:
             sid = find_track_in_navidrome(sub, track, logger)
             if sid and sid not in song_ids:

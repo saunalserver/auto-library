@@ -17,4 +17,9 @@ systemctl --user daemon-reload
 for t in "$HERE"/*.timer; do
     systemctl --user enable --now "$(basename "$t")"
 done
+# long-running services (no timer): anything with an [Install] section
+for s in "$HERE"/*.service; do
+    grep -q '^WantedBy=default.target' "$s" && systemctl --user enable --now "$(basename "$s")"
+done
 systemctl --user list-timers --all | grep -E 'auto-library|discovery|recommend|lyrics|pitchfork|dedup|NEXT'
+systemctl --user --no-pager status music-replies.service | head -3

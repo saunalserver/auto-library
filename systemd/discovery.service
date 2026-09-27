@@ -1,9 +1,9 @@
 [Unit]
-Description=Discovery downloads from Last.fm 7-day top artists + similar artists
+Description=Weekly discovery suggestions — a numbered ntfy list you pick from (no downloads)
 
 [Service]
 Type=oneshot
 WorkingDirectory=/home/saunalserver/projects/auto-library
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/bin/flock -w 1800 %t/auto-library.lock /usr/bin/python3 /home/saunalserver/projects/auto-library/automations/discovery_recommendations.py
-TimeoutStartSec=3h
+ExecStart=/usr/bin/python3 /home/saunalserver/projects/auto-library/automations/discovery_recommendations.py
+TimeoutStartSec=1h

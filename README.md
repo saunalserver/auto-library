@@ -5,7 +5,8 @@ and maintain a personal FLAC library (~1,900 albums, ~7,700 tracks) from what is
 actually listened to — no manual downloading, no manual upkeep.
 
 The system watches Last.fm scrobbles and downloads the albums that earn it
-(3 plays), pulls weekly discovery from top and similar artists, builds two
+(3 plays), suggests a weekly list of new albums you pick from by replying on
+ntfy, builds two
 playlists on its own (one from Pitchfork's RSS), backfills lyrics nightly, and
 keeps the library clean with audio-fingerprint dedup. Everything runs unattended
 on a home server as user-level systemd timers, and recovers by itself from the
@@ -24,7 +25,7 @@ before being recorded):
 
 ```
 Last.fm scrobbles ─► monitor.py ─► smart_download.py ─► tiddl ─► FLAC library ─► Navidrome
-Last.fm top/similar ► discovery_recommendations.py ──┘                        │
+Last.fm top/similar ► discovery_recommendations.py ─► ntfy list ─► your reply ─► music_replies.py ─┘
 Pitchfork RSS ──────► pitchfork_selects.py ─────────┘           playlists ◄───┤
 Last.fm similar ────► weekly_playlist.py (library only) ─────── playlist ◄────┤
 LRCLIB ─────────────► fetch_lyrics.py (.lrc sidecars) ────────────────────────┤
@@ -42,11 +43,12 @@ Everything runs as **user-level systemd timers** (no sudo). Unit files are in
 | Timer | When | Script | Does |
 |---|---|---|---|
 | `auto-library` | every 6 h (00:10 06:10 12:10 18:10) | `monitor.py` | Last.fm scrobbles → any track played 3× gets its album downloaded. Retries failures, watches singles for full albums, alerts on auth problems. |
-| `discovery` | Sun 06:00 | `automations/discovery_recommendations.py` | Up to 10 albums/week from your 7-day top artists and Last.fm "similar artists". |
+| `discovery` | Sun 06:00 | `automations/discovery_recommendations.py` | **Suggests, never downloads.** A numbered ntfy list of up to 10 albums (one per artist) from your 7-day top artists and artists similar to them — each checked on Tidal first: a real album (≥ 5 tracks, no remix/live releases), not already on disk, not skipped last week. |
+| `music-replies` (service) | always on | `automations/music_replies.py` | Reads your reply in the `music` topic — `1,3,5`, `2-4`, `all`, `none` — and downloads the picked albums (shared download lock, verified on disk, Navidrome rescanned). |
 | `recommendations` | Sun 07:00 | `automations/weekly_playlist.py` | Navidrome playlist **Weekly Discoveries**: 25 unplayed tracks by artists similar to what you played this week. |
 | `pitchfork-selects` | daily 07:30 | `automations/pitchfork_selects.py` | Finds the week's *Pitchfork Selects* article (RSS), downloads missing albums, builds playlist **Pitchfork Selects YYYY-MM-DD**. Each article is processed once. |
 | `lyrics` | daily 03:00 | `automations/fetch_lyrics.py` | Fetches `.lrc` sidecars from LRCLIB for tracks without lyrics, newest first (400/run). Remembers misses. |
-| `dedup-scan` | Mon 04:00 | `dedup_tool.py scan` | Fingerprints the library (`fpcalc`) and records audio-identical duplicates for review. Never deletes anything by itself. |
+| `dedup-scan` | Mon 04:00 | `library_cleanup.py verify --changed`, then `dedup_tool.py scan` | Re-downloads any file that no longer decodes, then fingerprints the library (`fpcalc`) and records audio-identical duplicates for review. |
 
 All scripts share `musiclib.py` (config, rotating logs, ntfy, Subsonic API with
 token auth, Navidrome DB access, Tidal token refresh, and the **music-drive
@@ -68,6 +70,27 @@ readable instead of downloading into a dead mount).
 - **Names don't match across services.** Tidal titles differ from Last.fm's
   (singles, deluxe editions, casing), so folder lookups are case-insensitive
   and fall back to the matched Tidal title.
+- **One album, many spellings.** Last.fm's "Symphonie Fantastique",
+  "Symphonie Fantastique op.14" and "Berlioz: Symphonie fantastique" are one
+  Tidal album. Ownership is checked again against the album Tidal resolves to,
+  so it is downloaded once.
+- **A wrong album is worse than none.** No low-confidence fallback; a number in
+  the requested title must be in the match ("Symphony No. 5" is never
+  "No. 2"); composer prefixes ("Mendelssohn: …") don't make unrelated albums
+  look alike.
+- **"Not found" is checked against the library first.** A track filed under a
+  collaborator (`Ninajirachi; BRUX`) or an old alias is recognised as owned
+  instead of failing forever. A given-up album is reported once, not daily.
+- **Singles retire themselves.** When an album arrives, a sibling single/EP
+  folder whose every track is audio-identical (chromaprint) to an album track
+  moves to the trash, and playlist entries pointing at it are re-pointed to the
+  album copy. A remix single with the same title stays.
+- **Corrupt downloads are caught.** `tiddl` can exit 0 leaving FLACs whose
+  frames don't decode; every downloader runs `flac -t` on what it fetched and
+  re-downloads anything broken.
+- **Nothing is deleted.** Every removal is a move to `music-trash/<date>/…` on
+  the music drive (same filesystem: instant, can't fill the system disk) and is
+  logged; `library_cleanup.py restore` puts it back.
 - **Duplicates are classified, not deleted.** An audio-identical pair is not
   automatically waste — see the classification table below.
 - **State survives everything** in `database/monitor.db` (SQLite, WAL): play
@@ -92,6 +115,13 @@ python3 dedup_tool.py report --kind same-album    # only the ones safe to reclai
 python3 dedup_tool.py trash <id>                  # move one copy to ~/music-trash (reversible)
 python3 dedup_tool.py restore <path>
 python3 dedup_tool.py purge --older-than 30d --yes
+
+python3 library_cleanup.py singles [--apply]      # singles an album made redundant
+python3 library_cleanup.py verify [--changed]     # files that don't decode -> re-download
+python3 library_cleanup.py repair-playlists       # re-point entries whose file is gone
+python3 library_cleanup.py trash "<folder>" --reason "..."
+python3 library_cleanup.py restore "<Artist/Album>"
+python3 library_cleanup.py list-trash
 ```
 
 Duplicate findings are classified, because an audio-identical pair is not
@@ -105,14 +135,17 @@ automatically waste:
 
 Only `same-album` counts toward the "reclaimable" figure in the ntfy summary.
 
-Notifications go to ntfy topic `music` (dedup summary to `music-dedup`).
+Notifications go to ntfy topic `music` (dedup summary to `music-dedup`). The
+`music` topic also takes your replies to the discovery list, so your ntfy user
+(or anonymous access, if your phone subscribes without an account) needs write
+access to it.
 
 ## Setup
 
 ### 1. Prerequisites
 
 - Python 3 (system Python is fine) + `pip install -r requirements.txt`
-- External tools on the PATH: `fpcalc` (Chromaprint, for dedup), `ffmpeg`,
+- External tools on the PATH: `fpcalc` (Chromaprint, for dedup), `ffmpeg`, `flac` (integrity checks),
   `docker` (Navidrome DB access), and [`tiddl`](https://github.com/oskvr37/tiddl)
   installed via `pipx install tiddl`
 - A [Navidrome](https://www.navidrome.org) server with your music mounted,
@@ -140,7 +173,7 @@ automatically by the automations. **Notifications** need no key either — any
 
 ```bash
 ./systemd/install.sh      # symlinks user units + timers, enables them
-python3 -m pytest tests   # 74 tests; no network needed except one Tidal auth check
+python3 -m pytest tests   # ~90 tests; no network needed except one Tidal auth check
 systemctl --user list-timers
 ```
 

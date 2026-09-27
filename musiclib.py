@@ -368,6 +368,26 @@ def ensure_tidal_token(logger: Optional[logging.Logger] = None, min_remaining: i
     return tidal_refresh_token(logger)
 
 
+# --- track/artist matching ----------------------------------------------------------------
+_FEAT_RE = re.compile(r"\s*[\(\[](?:feat|ft|with)\.?\s[^\)\]]*[\)\]]", re.IGNORECASE)
+_ARTIST_SPLIT_RE = re.compile(r"\s*(?:;|,|&|\bfeat\.?|\bft\.?|\bx\b|\bwith\b)\s*", re.IGNORECASE)
+
+
+def title_key(text):
+    """Loose track-title key: case, punctuation and '(feat. X)' do not matter.
+
+    Remix/version parentheticals are kept on purpose — 'harvest sky (Milkfish
+    remix)' is a different recording from 'harvest sky'.
+    """
+    text = _FEAT_RE.sub("", text or "")
+    return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", text.lower())).strip()
+
+
+def artist_names(text):
+    """'Ninajirachi; BRUX' -> {'ninajirachi', 'brux'} (Navidrome joins collaborators with '; ')."""
+    return {" ".join(p.lower().split()) for p in _ARTIST_SPLIT_RE.split(text or "") if p.strip()}
+
+
 # --- filesystem helpers -----------------------------------------------------------------------
 _FS_UNSAFE = re.compile(r'[\\/:"*?<>|]+')
 

@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import musiclib as m
+import library_cleanup
 
 NTFY_URL = m.NTFY_URL
 
@@ -45,6 +46,7 @@ MAX_RETRIES = 3
 RETRY_BATCH = 10          # failed albums retried per run
 WATCH_INTERVAL = 7 * 86400   # re-check a watched artist for a full album weekly...
 WATCH_MAX_AGE = 180 * 86400  # ...for up to 6 months
+RETIRED = []                 # singles retired this run (their playlist slots get re-pointed)
 
 _logger = m.setup_logger('auto-library', LOG_FILE.name)
 _LEVELS = {'INFO': logging.INFO, 'WARNING': logging.WARNING, 'ERROR': logging.ERROR}
@@ -118,8 +120,8 @@ def post_download_dedup_check(conn, artist, album):
             rows = find_existing_fingerprints(conn, n_artist, n_title)
             new_fp = fingerprint_file(f)
             for row in rows:
-                if Path(row['filepath']).resolve() == f.resolve():
-                    continue
+                if Path(row['filepath']).resolve() == f.resolve() or not Path(row['filepath']).exists():
+                    continue   # itself, or a file since trashed (e.g. a retired single)
                 # Reconstruct FingerprintResult from the stored base64. The
                 # stored value uses URL-safe base64 with a leading 0x01 format
                 # byte that must be stripped before 4-byte-aligned unpacking
@@ -162,7 +164,7 @@ def post_download_dedup_check(conn, artist, album):
     if suspect_dupes:
         msg = f'{artist} - {album}: {len(suspect_dupes)} tracks already exist elsewhere'
         log(f'DUPLICATE DETECTED: {msg}', 'WARNING')
-        notify('Duplicate Downloaded', msg, tags='warning,duplicate', priority='high')
+        notify('Duplicate Downloaded', msg, tags='warning,duplicate')
     return len(suspect_dupes)
 
 def get_token_expiry():
@@ -341,6 +343,10 @@ def init_database():
     if 'last_checked' not in columns:
         c.execute("ALTER TABLE album_watch ADD COLUMN last_checked REAL")
         log('Migrated album_watch: added last_checked column')
+    c.execute("PRAGMA table_info(failed_downloads)")
+    if 'track' not in [row[1] for row in c.fetchall()]:
+        c.execute("ALTER TABLE failed_downloads ADD COLUMN track TEXT")
+        log('Migrated failed_downloads: added track column')
     conn.commit()
     conn.close()
     log('Database initialized')
@@ -376,27 +382,40 @@ def set_last_auth_alert(timestamp):
     conn.commit()
     conn.close()
 
-def record_failed_download(artist, album, error_msg):
-    """Record a failed download for later retry."""
+def record_failed_download(artist, album, error_msg, track=None):
+    """Record a failed download for later retry; say so once when it is given up on.
+
+    Replaces a daily "N albums permanently failed" digest that re-sent the
+    same list at high priority forever — every entry on it turned out to be
+    in the library already under another name.
+    """
     conn = db_connect()
     c = conn.cursor()
-    c.execute("""INSERT INTO failed_downloads (artist, album, fail_count, first_failed, last_failed, last_error)
-                 VALUES (?, ?, 1, datetime('now'), datetime('now'), ?)
+    c.execute("""INSERT INTO failed_downloads (artist, album, fail_count, first_failed, last_failed, last_error, track)
+                 VALUES (?, ?, 1, datetime('now'), datetime('now'), ?, ?)
                  ON CONFLICT(artist, album) DO UPDATE SET
-                     fail_count = fail_count + 1, last_failed = datetime('now'), last_error = ?""",
-              (artist, album, error_msg, error_msg))
+                     fail_count = fail_count + 1, last_failed = datetime('now'), last_error = excluded.last_error,
+                     track = COALESCE(excluded.track, track)""",
+              (artist, album, error_msg, track))
+    fails = c.execute("SELECT fail_count, track FROM failed_downloads WHERE artist = ? AND album = ?",
+                      (artist, album)).fetchone()
     conn.commit()
     conn.close()
+    if fails and fails[0] == MAX_RETRIES and 'auth' not in (error_msg or '').lower():
+        played = f" (you played '{fails[1]}' {PLAY_THRESHOLD}x)" if fails[1] else ""
+        log(f'Giving up after {MAX_RETRIES} tries: {artist} - {album}: {error_msg}', 'WARNING')
+        notify('Album not downloadable', f'{artist} - {album}{played}\n{(error_msg or "")[:120]}\n'
+               'Stopped retrying.', 'x', 'default')
 
 def get_failed_downloads_for_retry():
     """Get downloads that failed but haven't exceeded retry limit."""
     conn = db_connect()
     c = conn.cursor()
-    c.execute("""SELECT artist, album, fail_count FROM failed_downloads
+    c.execute("""SELECT artist, album, fail_count, track FROM failed_downloads
                  WHERE fail_count < ? ORDER BY last_failed ASC LIMIT ?""", (MAX_RETRIES, RETRY_BATCH))
     results = c.fetchall()
     conn.close()
-    return [{'artist': r[0], 'album': r[1], 'fail_count': r[2]} for r in results]
+    return [{'artist': r[0], 'album': r[1], 'fail_count': r[2], 'track': r[3]} for r in results]
 
 def clear_failed_download(artist, album):
     """Remove from failed downloads after successful download."""
@@ -463,10 +482,15 @@ def update_play_counts(scrobbles):
     conn.close()
     return tracks_to_download
 
+# Shared with library_cleanup (playlist repair) and the tests.
+title_key = m.title_key
+artist_names = m.artist_names
+
+
 class LibraryChecker:
     def __init__(self):
         self.library_albums = set()
-        self.library_tracks = {}
+        self.library_tracks = {}   # title_key -> [(artist names, album), ...]
         self.downloaded_albums = set()
         self._loaded = False
 
@@ -478,23 +502,18 @@ class LibraryChecker:
         self._loaded = True
 
     def _load_from_navidrome(self):
-        cmd = ["docker", "exec", NAVIDROME_CONTAINER, "sqlite3", NAVIDROME_DB,
-               "SELECT lower(artist) || '|' || lower(album) || '|' || lower(title) FROM media_file;"]
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=40)
-            if result.returncode == 0:
-                for line in result.stdout.splitlines():
-                    parts = line.split("|")
-                    if len(parts) >= 3:
-                        artist, album, track = parts[0], parts[1], parts[2]
-                        a_norm, b_norm, t_norm = normalize(artist), normalize(album), normalize(track)
-                        self.library_albums.add((a_norm, b_norm))
-                        if t_norm not in self.library_tracks:
-                            self.library_tracks[t_norm] = []
-                        self.library_tracks[t_norm].append((a_norm, b_norm))
-                log(f"Navidrome index: {len(self.library_albums)} albums, {len(self.library_tracks)} tracks")
+            rows = m.navidrome_sql("SELECT artist, album_artist, album, title FROM media_file", timeout=60)
         except Exception as e:
             log(f"Failed to load Navidrome index: {e}", "WARNING")
+            return
+        for r in rows:
+            album = normalize(r.get("album"))
+            names = artist_names(r.get("artist")) | artist_names(r.get("album_artist"))
+            for name in names:
+                self.library_albums.add((name, album))
+            self.library_tracks.setdefault(title_key(r.get("title")), []).append((names, album))
+        log(f"Navidrome index: {len(self.library_albums)} albums, {len(self.library_tracks)} tracks")
 
     def _load_download_history(self):
         try:
@@ -518,14 +537,19 @@ class LibraryChecker:
             return True, "disk"
         return False, None
 
-    def track_exists_elsewhere(self, artist, track, target_album):
-        artist_norm, track_norm = normalize(artist), normalize(track)
-        target_album_norm = normalize(target_album)
-        if track_norm in self.library_tracks:
-            for lib_artist, lib_album in self.library_tracks[track_norm]:
-                if lib_artist == artist_norm and lib_album != target_album_norm:
-                    return True, lib_album
-        return False, None
+    def find_track(self, artist, track, album=None):
+        """Album name if this track is already in the library, else None.
+
+        A hit needs the same title plus either a shared artist (collaborations
+        are filed under the lead artist: Last.fm's 'Brux - How Could U' is
+        'Ninajirachi; BRUX' on disk) or the same album name (artist aliases:
+        'dltzk - frailty' is Jane Remover's 'Frailty').
+        """
+        wanted_names, album_norm = artist_names(artist), normalize(album)
+        for names, lib_album in self.library_tracks.get(title_key(track), []):
+            if names & wanted_names or (album_norm and lib_album == album_norm):
+                return lib_album
+        return None
 
     def _exists_on_disk(self, artist, album):
         artist_norm, album_norm = normalize(artist), normalize(album)
@@ -569,7 +593,7 @@ class LibraryChecker:
         except Exception as e:
             log(f"Failed to record download: {e}", "WARNING")
 
-def download_album(artist, album, checker, min_tracks=2):
+def download_album(artist, album, checker, min_tracks=2, track=None):
     log(f'Smart downloading: {artist} - {album}')
     cmd = ['python3', SMART_DOWNLOAD, artist, album, str(min_tracks)]
     try:
@@ -584,29 +608,49 @@ def download_album(artist, album, checker, min_tracks=2):
         # Check for auth failure (from new ApiError in smart_download)
         if 'login first' in combined_output.lower() or 'auth expired' in combined_output.lower() or 'api_error' in combined_output.lower():
             log(f'Auth failed during download: {artist} - {album}', 'ERROR')
-            record_failed_download(artist, album, "Auth expired")
+            record_failed_download(artist, album, "Auth expired", track)
             return False, "auth_failed"
+
+        # Tidal's copy of this album is already on disk under Tidal's title
+        # (Last.fm spelled it differently). Remember it under the requested
+        # name too so it is not looked up again.
+        mo = re.search(r'^ALREADY OWNED: (.+)$', combined_output, re.MULTILINE)
+        if result.returncode == 3 and mo:
+            log(f'Already owned as "{mo.group(1)}": {artist} - {album}')
+            checker.record_download(artist, album, file_count=0)
+            clear_failed_download(artist, album)
+            return False, "owned"
 
         # Check for not found
         if 'could not find matching album' in combined_output.lower():
             log(f'Not found on Tidal: {artist} - {album}', 'WARNING')
-            record_failed_download(artist, album, "Not found on Tidal")
+            record_failed_download(artist, album, "Not found on Tidal", track)
             return False, "not_found"
-        
+
+
         if result.returncode == 0 and 'Best match' in combined_output:
             expected = parse_expected_track_count(combined_output)
-            actual = count_local_audio_files(artist, album)
-            if actual == 0:
+            album_dirs = m.find_album_dirs(artist, album, root=MUSIC_ROOT)
+            if not album_dirs:
                 # Singles/deluxe editions land under Tidal's album title, not Last.fm's.
-                mt = re.search(r'Best match:\s*(.+?) - (.+) \(\d+ tracks?\)\s*$', combined_output, re.MULTILINE)
+                mt = re.search(r'Best match:\s*(.+?) - (.+) \(-?\d+ tracks?\)\s*$', combined_output, re.MULTILINE)
                 if mt:
-                    actual = count_local_audio_files(mt.group(1), mt.group(2))
+                    album_dirs = m.find_album_dirs(mt.group(1), mt.group(2), root=MUSIC_ROOT)
+            for d in album_dirs:     # a re-download of an old album renames every track
+                library_cleanup.dedupe_renumbered(d, _logger)
+            broken = library_cleanup.remove_broken_files(album_dirs, _logger)
+            if broken:
+                # Removed so the retry re-downloads them (tiddl skips files that exist).
+                log(f'CORRUPT DOWNLOAD: {artist} - {album}: {len(broken)} file(s) do not decode', 'ERROR')
+                record_failed_download(artist, album, f"{len(broken)} corrupt file(s), removed for re-download", track)
+                return False, "download_failed"
+            actual = sum(len(m.audio_files(d)) for d in album_dirs)
             if actual == 0:
                 # tiddl exited 0 but nothing is on disk. Seen for a whole week
                 # when the USB drive died: 21 albums were recorded as owned
                 # and never retried. Treat as a failure so it is retried.
                 log(f'NO FILES ON DISK after download: {artist} - {album}', 'ERROR')
-                record_failed_download(artist, album, "tiddl reported success but no files on disk")
+                record_failed_download(artist, album, "tiddl reported success but no files on disk", track)
                 return False, "download_failed"
             log(f'Successfully downloaded: {artist} - {album}', 'SUCCESS')
             if expected is not None and actual < expected:
@@ -626,18 +670,22 @@ def download_album(artist, album, checker, min_tracks=2):
                 dedup_conn.close()
             except Exception as e:
                 log(f'Dedup check failed (non-fatal): {e}', 'WARNING')
-            notify('Album Downloaded', f'{artist} - {album}', 'headphones,arrow_down')
+            # A single this album now contains is redundant (it would show twice in Navidrome).
+            retired = library_cleanup.retire_superseded_singles(album_dirs, _logger)
+            RETIRED.extend(retired)
+            extra = ("\nRemoved the single(s) it replaces: " + ", ".join(retired)) if retired else ""
+            notify('Album Downloaded', f'{artist} - {album}{extra}', 'headphones,arrow_down')
             checker.record_download(artist, album, file_count=actual)
             clear_failed_download(artist, album)
             return True, None
         
         error_msg = combined_output[:300] if combined_output else f"Exit code {result.returncode}"
         log(f'Failed: {artist} - {album}', 'ERROR')
-        record_failed_download(artist, album, error_msg)
+        record_failed_download(artist, album, error_msg, track)
         return False, "download_failed"
     except Exception as e:
         log(f'Exception: {e}', 'ERROR')
-        record_failed_download(artist, album, str(e))
+        record_failed_download(artist, album, str(e), track)
         return False, "exception"
 
 
@@ -657,14 +705,16 @@ def process_downloads(tracks_to_download, checker):
             log(f'Album already owned ({reason}): {artist} - {album}')
             skipped_count += 1
             continue
-        exists, existing_album = checker.track_exists_elsewhere(track['artist'], track['track'], track['album'])
-        if exists:
+        existing_album = checker.find_track(artist, track['track'], album)
+        if existing_album is not None:
             log(f'Track exists in "{existing_album}": {artist} - {track["track"]}. Skipping: {album}')
             skipped_count += 1
             continue
-        success, error_type = download_album(artist, album, checker)
+        success, error_type = download_album(artist, album, checker, track=track['track'])
         if success:
             downloaded_count += 1
+        elif error_type == "owned":
+            skipped_count += 1
         else:
             failed_count += 1
             failed_albums.append((artist, album, error_type))
@@ -676,38 +726,43 @@ def process_downloads(tracks_to_download, checker):
 
     log(f'Summary: {downloaded_count} downloaded, {skipped_count} skipped, {failed_count} failed')
 
-    # Notify with details on failures
-    if failed_count > 0:
+    # Not-found albums are retried and reported once if they are given up on
+    # (record_failed_download); only real download errors are pushed now.
+    failed_albums = [f for f in failed_albums if f[2] != "not_found"]
+    if failed_albums:
         lines = []
         for artist, album, error_type in failed_albums:
             reason = {"not_found": "not on Tidal", "auth_failed": "auth expired",
                       "download_failed": "download error", "exception": "exception"}.get(error_type, error_type)
             lines.append(f"  {artist} - {album} ({reason})")
-        msg = f"{failed_count} album(s) failed:\n" + "\n".join(lines)
+        msg = f"{len(failed_albums)} album(s) failed:\n" + "\n".join(lines)
         notify('Download Failures', msg, 'warning', 'high')
 
     return downloaded_count
 
 def retry_failed_downloads(checker):
-    """Retry previously failed downloads."""
+    """Retry previously failed downloads — unless the track has turned up in the library."""
     failed = get_failed_downloads_for_retry()
     if not failed:
-        # Check for permanently failed albums and notify once
-        notify_permanently_failed()
         return 0
 
     log(f"Retrying {len(failed)} previously failed downloads")
     success_count = 0
 
     for item in failed:
-        artist, album = item['artist'], item['album']
+        artist, album, track = item['artist'], item['album'], item['track']
         owned, reason = checker.is_album_owned(artist, album)
+        if not owned:
+            # A single's "album" is usually its own title; legacy rows have no track.
+            existing = checker.find_track(artist, track or album, album)
+            if existing is not None:
+                owned, reason = True, f'track is on "{existing}"'
         if owned:
             log(f"Retry skip - now owned ({reason}): {artist} - {album}")
             clear_failed_download(artist, album)
             continue
 
-        success, error_type = download_album(artist, album, checker)
+        success, error_type = download_album(artist, album, checker, track=track)
         if success:
             success_count += 1
         elif error_type == "auth_failed":
@@ -716,47 +771,7 @@ def retry_failed_downloads(checker):
 
     if success_count > 0:
         log(f"Retry summary: {success_count} succeeded")
-
-    # After retrying, check for newly permanent failures
-    notify_permanently_failed()
-
     return success_count
-
-def notify_permanently_failed():
-    """Notify about albums that hit MAX_RETRIES and won't be retried anymore."""
-    conn = db_connect()
-    c = conn.cursor()
-    c.execute("""SELECT artist, album, fail_count, last_error FROM failed_downloads
-                 WHERE fail_count >= ? ORDER BY last_failed DESC""", (MAX_RETRIES,))
-    permanent = c.fetchall()
-    conn.close()
-
-    if not permanent:
-        return
-
-    # Only notify once per 24h for permanent failures
-    state_conn = db_connect()
-    state_cur = state_conn.cursor()
-    state_cur.execute("SELECT value FROM daemon_state WHERE key='last_permanent_alert'")
-    row = state_cur.fetchone()
-    state_conn.close()
-    last_alert = int(row[0]) if row else 0
-    if time.time() - last_alert < 86400:
-        return
-
-    lines = []
-    for artist, album, fails, error in permanent:
-        short_error = (error or "unknown")[:60]
-        lines.append(f"  {artist} - {album} ({fails}x: {short_error})")
-    msg = f"{len(permanent)} album(s) permanently failed:\n" + "\n".join(lines)
-    notify('Albums Permanently Failed', msg, 'x', 'high')
-
-    state_conn = db_connect()
-    state_cur = state_conn.cursor()
-    state_cur.execute("INSERT OR REPLACE INTO daemon_state (key, value) VALUES ('last_permanent_alert', ?)",
-                      (str(int(time.time())),))
-    state_conn.commit()
-    state_conn.close()
 
 def check_single_on_album(album_id, single_title):
     """Check if a watched single appears on a candidate album's tracklist."""
@@ -900,7 +915,6 @@ for a in results.items[:50]:
             success, error_type = download_album(artist, album_title, checker)
             if success:
                 found_count += 1
-                notify('Watch Album Downloaded', f'{artist} - {album_title} (full album)', 'headphones,star')
                 # Remove only the matched watch entry, not all entries for this artist
                 conn2 = db_connect()
                 conn2.execute("DELETE FROM album_watch WHERE artist = ? AND track_title = ?", (artist, watched_single))
@@ -977,7 +991,7 @@ def main():
             log(f"Skipping {len(tracks_to_download)} downloads due to auth failure", "WARNING")
             # Record them as failed so they'll be retried
             for track in tracks_to_download:
-                record_failed_download(track['artist'], track['album'], "Auth was broken")
+                record_failed_download(track['artist'], track['album'], "Auth was broken", track['track'])
     
     # Retry failed downloads if auth is OK
     if auth_ok:
@@ -985,11 +999,12 @@ def main():
         downloads += check_album_watch(checker) or 0
 
     if downloads:
-        try:
-            m.Subsonic(client="auto-library").start_scan()
-            log(f"Navidrome rescan triggered ({downloads} new album(s))")
-        except Exception as e:
-            log(f"Navidrome rescan failed: {e}", "WARNING")
+        log(f"Navidrome rescan ({downloads} new album(s))")
+        if m.Subsonic(client="auto-library").rescan(_logger) and RETIRED:
+            try:
+                library_cleanup.repair_playlists(_logger)
+            except Exception as e:
+                log(f"Playlist repair failed: {e}", "WARNING")
 
     set_last_check_time(current_time)
     log('='*60)
