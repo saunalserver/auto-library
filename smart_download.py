@@ -262,7 +262,10 @@ def find_best_album_match(artist_name, album_name, min_tracks=2):
 
     for track in tracks:
         artist_sim = similarity(track["artist"], artist_name)
-        track_sim = similarity(track["title"], album_name)
+        # A single's album is often the track title + "(Remixer Remix)" suffix —
+        # compare against the parenthetical-stripped name too.
+        track_sim = max(similarity(track["title"], album_name),
+                        similarity(track["title"], base_title(album_name)))
         if artist_sim >= 0.6 and track_sim >= 0.5 and track["album_id"]:
             print(f"  Found track: {track['artist']} - {track['title']} -> album: {track['album_title']}")
 
