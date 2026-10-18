@@ -100,6 +100,9 @@ def parse_reply(text: str, count: int) -> Optional[list[int]]:
 
 
 # --- resolving candidates on Tidal -------------------------------------------------------
+last_api_error = ""   # message behind the most recent 'api_error' from resolve()
+
+
 def resolve(artist: str, album: str, min_tracks: int = 5) -> tuple[str, Optional[tuple[str, str, str, int]]]:
     """Look an album up on Tidal without downloading it.
 
@@ -111,7 +114,9 @@ def resolve(artist: str, album: str, min_tracks: int = 5) -> tuple[str, Optional
     try:
         with contextlib.redirect_stdout(buf):
             album_id, title, found_artist, tracks = sd.find_best_album_match(artist, album, min_tracks)
-    except sd.ApiError:
+    except sd.ApiError as exc:
+        global last_api_error
+        last_api_error = str(exc)
         return "api_error", None
     # -1 = matched through a track's parent release (singles); not an album pick.
     if not album_id or tracks < min_tracks:

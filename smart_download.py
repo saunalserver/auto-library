@@ -105,33 +105,46 @@ class ApiError(Exception):
 
 def search_tidal(query):
     """Search Tidal and return structured results. Raises ApiError on auth/network failures."""
+    # Raw JSON rather than tiddl's pydantic Search model: one malformed result anywhere
+    # (2026-10-18: a video with album.cover = null) failed validation for the whole search,
+    # which read as an API error and killed that week's discovery run. Videos and playlists
+    # are not requested at all. The query goes in argv, never into the code string.
     code = '''
 import sys
 from tiddl.api import TidalApi
 from tiddl.config import Config
 
+def clean(text):
+    return str(text or "").replace("|", "/").replace("\\n", " ")
+
+def first_artist(item):
+    artists = item.get("artists") or []
+    return clean(artists[0].get("name")) if artists else ""
+
 try:
     config = Config.fromFile()
     api = TidalApi(config.auth.token, config.auth.user_id, config.auth.country_code)
-    results = api.getSearch("''' + query.replace('"', '\\"') + '''")
+    req = api.session.get(f"{api.URL}/search", expire_after=0, params={
+        "countryCode": config.auth.country_code, "query": sys.argv[1],
+        "types": "ARTISTS,ALBUMS,TRACKS", "limit": 10})
+    if req.status_code != 200:
+        raise RuntimeError(f"HTTP {req.status_code}: {req.text[:200]}")
+    results = req.json()
 except Exception as e:
     print(f"API_ERROR: {e}", file=sys.stderr)
     sys.exit(2)
 
-for artist in results.artists.items[:5]:
-    print(f"ARTIST|{artist.id}|{artist.name}")
+for artist in ((results.get("artists") or {}).get("items") or [])[:5]:
+    print(f"ARTIST|{artist.get('id')}|{clean(artist.get('name'))}")
 
-for album in results.albums.items[:10]:
-    artist_name = album.artists[0].name if album.artists else ""
-    print(f"ALBUM|{album.id}|{album.title}|{artist_name}|{album.numberOfTracks}")
+for album in ((results.get("albums") or {}).get("items") or [])[:10]:
+    print(f"ALBUM|{album.get('id')}|{clean(album.get('title'))}|{first_artist(album)}|{album.get('numberOfTracks') or 0}")
 
-for track in results.tracks.items[:10]:
-    artist_name = track.artists[0].name if track.artists else ""
-    album_id = track.album.id if track.album else ""
-    album_title = track.album.title if track.album else ""
-    print(f"TRACK|{track.id}|{track.title}|{artist_name}|{album_id}|{album_title}")
+for track in ((results.get("tracks") or {}).get("items") or [])[:10]:
+    album = track.get("album") or {}
+    print(f"TRACK|{track.get('id')}|{clean(track.get('title'))}|{first_artist(track)}|{album.get('id') or ''}|{clean(album.get('title'))}")
 '''
-    result = subprocess.run([TIDDL_PYTHON, "-c", code], capture_output=True, text=True, timeout=90)
+    result = subprocess.run([TIDDL_PYTHON, "-c", code, query], capture_output=True, text=True, timeout=90)
 
     if result.returncode == 2 or "API_ERROR" in result.stderr:
         error_msg = result.stderr.strip()

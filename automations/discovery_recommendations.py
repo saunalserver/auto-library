@@ -34,6 +34,7 @@ FROM_TOP = 5                 # of which albums by artists you already play
 SIMILAR_PER_ARTIST = 2       # so one favourite does not fill the whole list
 TRIES_PER_ARTIST = 4         # Last.fm albums to try per artist before moving on
 MIN_TRACKS = 5
+MAX_API_ERRORS = 3           # Tidal failures in a row before giving up: auth or Tidal itself is down
 DECLINED_KEY = "discovery_declined"
 SKIP_TITLE_RE = re.compile(r"\b(remix(es)?|live|karaoke|instrumentals?|acapellas?|sped up|slowed)\b", re.I)
 
@@ -85,9 +86,13 @@ def declined_albums(conn, logger) -> set[str]:
     return declined | new
 
 
+api_errors_in_a_row = 0
+
+
 def pick_for_artist(artist: str, reason: str, lib: Library, declined: set[str], seen: set[str],
                     logger, n: int) -> Optional[dp.Suggestion]:
     """The first of the artist's popular albums that is on Tidal, a real album, and not owned."""
+    global api_errors_in_a_row
     tries = 0
     for album in top_albums(artist, limit=10):
         if tries >= TRIES_PER_ARTIST:
@@ -97,7 +102,13 @@ def pick_for_artist(artist: str, reason: str, lib: Library, declined: set[str], 
         tries += 1
         status, match = dp.resolve(artist, album, MIN_TRACKS)
         if status == "api_error":
-            raise RuntimeError("Tidal API error (auth?)")
+            # One bad lookup skips that album; only a run of them means Tidal/auth is down.
+            api_errors_in_a_row += 1
+            logger.warning("  skip %s - %s (Tidal error: %s)", artist, album, dp.last_api_error[:300])
+            if api_errors_in_a_row >= MAX_API_ERRORS:
+                raise RuntimeError(f"{MAX_API_ERRORS} Tidal errors in a row, last: {dp.last_api_error[:200]}")
+            continue
+        api_errors_in_a_row = 0
         if status != "ok":
             logger.info("  skip %s - %s (%s)", artist, album, status)
             continue
