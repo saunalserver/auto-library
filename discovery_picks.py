@@ -169,7 +169,7 @@ def download_picks(picks: list[Suggestion], logger: logging.Logger) -> tuple[lis
             continue
         logger.info("Downloading pick %d: %s (album %s)", s.n, s.label(), s.album_id)
         try:
-            result = subprocess.run([m.TIDDL_BIN, "url", f"album/{s.album_id}", "download"],
+            result = subprocess.run([*m.TIDDL_DOWNLOAD, "url", f"album/{s.album_id}", "download"],
                                     capture_output=True, text=True, timeout=1800)
         except Exception as exc:  # noqa: BLE001
             logger.error("tiddl failed for %s: %s", s.label(), exc)
@@ -178,6 +178,7 @@ def download_picks(picks: list[Suggestion], logger: logging.Logger) -> tuple[lis
             continue
         for d in m.find_album_dirs(s.artist, s.title):
             library_cleanup.dedupe_renumbered(d, logger)
+            library_cleanup.unify_album_tags(d, logger)
         broken = library_cleanup.remove_broken_files(m.find_album_dirs(s.artist, s.title), logger)
         on_disk = m.count_audio_files(s.artist, s.title)
         if broken:

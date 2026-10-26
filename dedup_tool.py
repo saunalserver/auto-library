@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json as jsonlib
+import os
 import re
 import shutil
 import sqlite3

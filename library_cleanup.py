@@ -22,6 +22,7 @@ system disk. Nothing is ever deleted here.
     python3 library_cleanup.py list-trash
     python3 library_cleanup.py repair-playlists   # after a rescan
     python3 library_cleanup.py verify [--changed] # corrupt files -> trash -> re-download
+    python3 library_cleanup.py unify [<folder>…]  # one date + album artist per album folder
 """
 from __future__ import annotations
 
@@ -159,6 +160,7 @@ def repair_albums(albums, logger: logging.Logger = _log) -> tuple[list[str], lis
             r = subprocess.run(["python3", str(Path(__file__).resolve().parent / "smart_download.py"),
                                 album.parent.name, album.name, "1"], capture_output=True, text=True, timeout=1800)
         dedupe_renumbered(album, logger)
+        unify_album_tags(album, logger)
         still_bad = remove_broken_files([album], logger)
         after = len(m.audio_files(album))
         if r.returncode == 0 and not still_bad and after >= before:
@@ -207,6 +209,53 @@ def dedupe_renumbered(album_dir: Path, logger: logging.Logger = _log) -> list[st
             logger.info("Same track twice, kept %s, trashed %s", keep.name, f.name)
             removed.append(f.name)
     return removed
+
+
+# --- one album, one set of album tags --------------------------------------------------
+def unify_album_tags(album_dir: Path, logger: logging.Logger = _log) -> int:
+    """Give every FLAC in an album folder the same date and album artist.
+
+    Navidrome groups an album by album artist + release date, so one folder
+    showed up as two or more albums (2026-10-24: 14 folders) when tracks
+    disagreed: tiddl dates each track by its own release (pre-release singles
+    are months older: Arlo Parks split into "2020" and "2021"), AAC files
+    tiddl tagged as MP4 carry `date=2026-03-25 00:00:00+00:00` and the *track*
+    artist as album artist (DJ-Kicks: Djrum became 28 albums). Uses the newest
+    date — the album's own release — and the most common album artist.
+    Returns the number of files changed.
+    """
+    from collections import Counter
+    from mutagen.flac import FLAC
+    tagged = []
+    for f in m.audio_files(Path(album_dir)):
+        if f.suffix.lower() != ".flac":
+            continue
+        try:
+            tagged.append((f, FLAC(f)))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Cannot read tags of %s: %s", f.name, exc)
+    dates = [mo.group(0) for _, a in tagged for v in a.get("date", [])[:1]
+             if (mo := re.match(r"\d{4}(-\d\d-\d\d)?", v))]
+    artists = Counter(tuple(a.get("albumartist", [])) for _, a in tagged if a.get("albumartist"))
+    if len(tagged) < 2 or not dates:
+        return 0
+    if len(artists) <= 1 and all(len({tuple(a.get(k, [])) for _, a in tagged}) == 1 for k in ("date", "year")):
+        return 0                                         # already consistent: leave the files alone
+    date = max(dates, key=lambda d: (d[:4], len(d), d))
+    want = {"date": [date], "originaldate": [date], "year": [date[:4]], "originalyear": [date[:4]]}
+    if artists:
+        want["albumartist"] = list(artists.most_common(1)[0][0])
+    changed = 0
+    for f, a in tagged:
+        if all(a.get(k) == v for k, v in want.items()):
+            continue
+        for k, v in want.items():
+            a[k] = v
+        a.save()
+        changed += 1
+    if changed:
+        logger.info("Unified album tags on %d file(s) in %s (date %s)", changed, Path(album_dir).name, date)
+    return changed
 
 
 # --- redundant singles ---------------------------------------------------------------
@@ -347,6 +396,8 @@ def main() -> int:
     sub.add_parser("repair-playlists", help="re-point playlist entries whose file is gone")
     p = sub.add_parser("verify", help="find files that don't decode and re-download their albums")
     p.add_argument("--changed", action="store_true", help="only files changed since the last verify")
+    p = sub.add_parser("unify", help="give each album folder one date and album artist (all folders by default)")
+    p.add_argument("folders", nargs="*")
     args = ap.parse_args()
     logger = m.setup_logger("library-cleanup", "library_cleanup.log")
     if not m.library_available():
@@ -376,6 +427,12 @@ def main() -> int:
                      logger=logger)
             if repaired:
                 m.Subsonic(client="library-cleanup").rescan(logger)
+    elif args.cmd == "unify":
+        dirs = [Path(f) for f in args.folders] or sorted({f.parent for f in m.MUSIC_ROOT.rglob("*.flac")})
+        changed = sum(1 for d in dirs if unify_album_tags(d, logger))
+        print(f"{changed} of {len(dirs)} album folder(s) unified")
+        if changed:
+            m.Subsonic(client="library-cleanup").rescan(logger)
     elif args.cmd == "repair-playlists":
         print(f"{repair_playlists(logger)} playlist entries repaired")
     elif args.cmd == "list-trash":

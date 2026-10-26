@@ -93,3 +93,21 @@ def test_old_and_new_tiddl_names_of_one_track_collapse_to_the_new_one(library):
     # different tracks with the same number on different discs are left alone
     shutil.copy(album / "01 - Artist - Song 1.flac", album / "2-02 - Artist - Other Song.flac")
     assert lc.dedupe_renumbered(album) == []
+
+
+def test_one_folder_gets_one_date_and_album_artist_so_navidrome_shows_one_album(library):
+    from mutagen.flac import FLAC
+    root, album = library
+    tags = [("2021-01-29", ["Arlo"]), ("2020-10-20", ["Arlo"]),          # pre-release single's date
+            ("2021-01-29 00:00:00+00:00", ["Guest"]), ("2021-01-29", ["Arlo"])]  # AAC tagged as MP4
+    for f, (date, aa) in zip(sorted(m.audio_files(album)), tags):
+        a = FLAC(f)
+        a["date"], a["albumartist"] = date, aa
+        a.save()
+    untouched = root / "Artist" / "Song 2"                                # one consistent file
+    assert lc.unify_album_tags(untouched) == 0
+    assert lc.unify_album_tags(album) == 4                                 # every file gains YEAR
+    for f in m.audio_files(album):
+        a = FLAC(f)
+        assert (a["date"], a["year"], a["albumartist"]) == (["2021-01-29"], ["2021"], ["Arlo"])
+    assert lc.unify_album_tags(album) == 0                                 # nothing left to change

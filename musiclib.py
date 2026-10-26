@@ -58,6 +58,8 @@ NAVIDROME_DB = os.getenv("NAVIDROME_DB", "/data/navidrome.db")
 TIDDL_BIN = os.getenv("TIDDL_BINARY", str(Path.home() / ".local" / "bin" / "tiddl"))
 TIDDL_PYTHON = os.getenv("TIDDL_PYTHON", str(Path.home() / ".local/share/pipx/venvs/tiddl/bin/python"))
 TIDDL_CONFIG = Path(os.getenv("TIDDL_CONFIG", str(Path.home() / "tiddl.json")))
+# Downloads go through tiddl_v2.py (tiddl + FLAC from Tidal's v2 manifests instead of AAC).
+TIDDL_DOWNLOAD = [TIDDL_PYTHON, str(Path(__file__).resolve().with_name("tiddl_v2.py"))]
 LASTFM_API_KEY = os.getenv("LASTFM_API_KEY", "")
 LASTFM_USERNAME = os.getenv("LASTFM_USERNAME", os.getenv("LASTFM_USER", ""))
 LASTFM_API_URL = "http://ws.audioscrobbler.com/2.0/"

@@ -638,6 +638,7 @@ def download_album(artist, album, checker, min_tracks=2, track=None):
                     album_dirs = m.find_album_dirs(mt.group(1), mt.group(2), root=MUSIC_ROOT)
             for d in album_dirs:     # a re-download of an old album renames every track
                 library_cleanup.dedupe_renumbered(d, _logger)
+                library_cleanup.unify_album_tags(d, _logger)
             broken = library_cleanup.remove_broken_files(album_dirs, _logger)
             if broken:
                 # Removed so the retry re-downloads them (tiddl skips files that exist).

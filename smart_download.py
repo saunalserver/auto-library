@@ -17,6 +17,7 @@ EXIT_OK, EXIT_FAILED, EXIT_API_ERROR, EXIT_OWNED = 0, 1, 2, 3
 
 TIDDL_PYTHON = os.getenv('TIDDL_PYTHON', str(Path.home() / ".local/share/pipx/venvs/tiddl/bin/python"))
 TIDDL_BIN = os.getenv('TIDDL_BINARY', str(Path.home() / ".local/bin/tiddl"))
+TIDDL_DOWNLOAD = [TIDDL_PYTHON, str(Path(__file__).resolve().with_name("tiddl_v2.py"))]
 
 def normalize(text):
     if not text:
@@ -203,7 +204,7 @@ for album in results.items[:30]:
     return albums
 
 def download_album_by_id(album_id):
-    result = subprocess.run([TIDDL_BIN, "url", f"album/{album_id}", "download"],
+    result = subprocess.run([*TIDDL_DOWNLOAD, "url", f"album/{album_id}", "download"],
                           capture_output=True, text=True, timeout=1800)
     return result.returncode == 0, result.stdout + result.stderr
 

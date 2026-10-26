@@ -368,7 +368,7 @@ def get_album_track_count(album_id: str) -> int:
 def download_album_by_id(album_id: str, logger: logging.Logger) -> bool:
     logger.info("    Downloading album %s via tiddl...", album_id)
     try:
-        result = subprocess.run([TIDDL_BIN, "url", f"album/{album_id}", "download"],
+        result = subprocess.run([*m.TIDDL_DOWNLOAD, "url", f"album/{album_id}", "download"],
                                 capture_output=True, text=True, timeout=1800)
         if result.returncode == 0:
             return True
@@ -397,6 +397,7 @@ def download_track_album(track: P4kTrack, logger: logging.Logger) -> Tuple[Optio
         return None, None, "download_failed"
     for d in m.find_album_dirs(artist_name, album_name):
         library_cleanup.dedupe_renumbered(d, logger)
+        library_cleanup.unify_album_tags(d, logger)
     # Each article is processed once, so re-download corrupt files right away (once).
     if library_cleanup.remove_broken_files(m.find_album_dirs(artist_name, album_name), logger):
         if not download_album_by_id(album_id, logger) or \
