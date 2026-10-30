@@ -33,16 +33,28 @@ try:
 except ImportError:  # dotenv is optional; .env may already be in the environment
     pass
 
+# Allow ~ in path settings: subprocess and Path() do not expand it.
+for _key in ("MUSIC_ROOT", "LIBRARY_MOUNT", "MONITOR_DB", "LOG_DIR",
+             "TIDDL_BINARY", "TIDDL_PYTHON", "TIDDL_CONFIG"):
+    if os.environ.get(_key, "").startswith("~"):
+        os.environ[_key] = os.path.expanduser(os.environ[_key])
+
 # --- configuration (env overrides, sane defaults) --------------------------
 MUSIC_ROOT = Path(os.getenv("MUSIC_ROOT", "/mnt/photos/flac_music"))
-LIBRARY_MOUNT = Path(os.getenv("LIBRARY_MOUNT", "/mnt/photos"))
+# The drive MUSIC_ROOT lives on; must be a mountpoint or every automation skips its run.
+# Set LIBRARY_MOUNT= (empty) if the library is not on its own drive.
+_mount = os.getenv("LIBRARY_MOUNT", "/mnt/photos")
+LIBRARY_MOUNT: Optional[Path] = Path(_mount) if _mount else None
+# Trash and download staging sit beside the library (same filesystem: moves are instant).
+LIBRARY_DRIVE = LIBRARY_MOUNT or MUSIC_ROOT.parent
 DB_PATH = Path(os.getenv("MONITOR_DB", str(PROJECT_ROOT / "database" / "monitor.db")))
 LOG_DIR = Path(os.getenv("LOG_DIR", str(PROJECT_ROOT / "logs")))
 NTFY_URL = os.getenv("NTFY_URL", "http://localhost:8093/music")
+NTFY_DEDUP_URL = os.getenv("NTFY_DEDUP_URL", NTFY_URL + "-dedup")
 
 
 def _ntfy_auth_header() -> Optional[str]:
-    """Bearer token for the self-hosted ntfy (deny-all); ~/.config/ntfy-token."""
+    """Bearer token for ntfy: NTFY_TOKEN, else ~/.config/ntfy-token, else none (open server)."""
     tok = os.getenv("NTFY_TOKEN", "")
     if not tok:
         try:
@@ -51,7 +63,7 @@ def _ntfy_auth_header() -> Optional[str]:
             return None
     return f"Bearer {tok}" if tok else None
 SUBSONIC_URL = os.getenv("SUBSONIC_URL", "http://localhost:4534").rstrip("/")
-SUBSONIC_USER = os.getenv("SUBSONIC_USER", "saunalserver")
+SUBSONIC_USER = os.getenv("SUBSONIC_USER", "")
 SUBSONIC_PASS = os.getenv("SUBSONIC_PASS", "")
 NAVIDROME_CONTAINER = os.getenv("NAVIDROME_CONTAINER", "navidrome")
 NAVIDROME_DB = os.getenv("NAVIDROME_DB", "/data/navidrome.db")

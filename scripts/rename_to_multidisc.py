@@ -12,12 +12,13 @@ DRY RUN by default. Pass --execute to actually rename.
 """
 from __future__ import annotations
 import argparse
+import os
 import re
 import sys
 from pathlib import Path
 from mutagen import File
 
-MUSIC_ROOT = Path("/mnt/photos/flac_music")
+MUSIC_ROOT = Path(os.getenv("MUSIC_ROOT", "/mnt/photos/flac_music"))
 
 
 def get_disc_number(audio_file: Path) -> int | None:

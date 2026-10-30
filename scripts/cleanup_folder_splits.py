@@ -21,13 +21,14 @@ keyed to metadata (artist+album+title) will survive. Trigger a rescan after.
 """
 from __future__ import annotations
 import argparse
+import os
 import re
 import shutil
 import sys
 from collections import defaultdict
 from pathlib import Path
 
-MUSIC_ROOT = Path("/mnt/photos/flac_music")
+MUSIC_ROOT = Path(os.getenv("MUSIC_ROOT", "/mnt/photos/flac_music"))
 SANITIZE_PATTERN = re.compile(r'[\\/:"*?<>|]+')
 
 

@@ -1,7 +1,7 @@
 # Auto Library
 
 **An autonomous, listening-driven music library.** Six systemd automations grow
-and maintain a personal FLAC library (~1,900 albums, ~7,700 tracks) from what is
+and maintain a personal FLAC library (~880 albums, ~8,600 tracks) from what is
 actually listened to — no manual downloading, no manual upkeep.
 
 The system watches Last.fm scrobbles and downloads the albums that earn it
@@ -85,6 +85,16 @@ readable instead of downloading into a dead mount).
   folder whose every track is audio-identical (chromaprint) to an album track
   moves to the trash, and playlist entries pointing at it are re-pointed to the
   album copy. A remix single with the same title stays.
+- **"FLAC" is checked, not trusted.** Since early 2026 Tidal's v1 stream
+  endpoint hands out AAC 320 for CD-quality tracks, and tiddl saves it as
+  `.m4a`. Every download goes through `tiddl_v2.py`, which asks Tidal's
+  openapi v2 endpoint for the real FLAC instead. Tracks Tidal only has as AAC
+  are tagged `SOURCE=Tidal AAC 320 (no lossless on Tidal)`;
+  `scripts/upgrade_aac.py` finds and re-downloads older fake-FLAC albums.
+  Check with `ffprobe` (codec), never the file extension.
+- **One album stays one album.** Navidrome splits an album when its tracks
+  disagree on date or album artist, so after every download each album folder
+  gets one of each (`library_cleanup.py unify`).
 - **Corrupt downloads are caught.** `tiddl` can exit 0 leaving FLACs whose
   frames don't decode; every downloader runs `flac -t` on what it fetched and
   re-downloads anything broken.
@@ -122,6 +132,10 @@ python3 library_cleanup.py repair-playlists       # re-point entries whose file 
 python3 library_cleanup.py trash "<folder>" --reason "..."
 python3 library_cleanup.py restore "<Artist/Album>"
 python3 library_cleanup.py list-trash
+python3 library_cleanup.py unify [<folder>…]     # one date + album artist per album folder
+
+python3 scripts/upgrade_aac.py --list             # albums whose "FLAC" files are really AAC
+python3 scripts/patch_tiddl.py --check            # is the tiddl fix still applied?
 ```
 
 Duplicate findings are classified, because an audio-identical pair is not
@@ -142,43 +156,82 @@ access to it.
 
 ## Setup
 
+Linux with systemd. You need your own paid Tidal account.
+
 ### 1. Prerequisites
 
-- Python 3 (system Python is fine) + `pip install -r requirements.txt`
-- External tools on the PATH: `fpcalc` (Chromaprint, for dedup), `ffmpeg`, `flac` (integrity checks),
-  `docker` (Navidrome DB access), and [`tiddl`](https://github.com/oskvr37/tiddl)
-  installed via `pipx install tiddl`
-- A [Navidrome](https://www.navidrome.org) server with your music mounted,
-  and a scrobbling client feeding your Last.fm account
+- Python 3.10+ (system Python is fine)
+- On the PATH: `fpcalc` (Chromaprint, for dedup), `ffmpeg`, `flac` (integrity
+  checks), `docker` (Navidrome's DB is read with `docker exec … sqlite3`)
+- [`tiddl`](https://github.com/oskvr37/tiddl) 2.8 via `pipx install tiddl`
+  (it brings its own venv; `tiddl_v2.py` runs inside it)
+- A [Navidrome](https://www.navidrome.org) server in a Docker container with
+  your music folder mounted, and a player that scrobbles to Last.fm
 
-### 2. API keys & credentials
+### 2. Get the code and configure
 
-Copy `.env.example` to `.env` and fill in:
+```bash
+git clone https://github.com/saunalserver/auto-library ~/projects/auto-library
+cd ~/projects/auto-library
+./setup.sh          # checks the tools, writes .env, installs deps, patches tiddl
+tiddl auth login    # once, in a browser; the token is refreshed automatically
+```
+
+`setup.sh` asks for these (or copy `.env.example` to `.env` and fill it in):
 
 | Variable | What it's for | Where to get it |
 |---|---|---|
 | `LASTFM_API_KEY` | Read your scrobbles, top artists, similar artists | Create a free API account at **https://www.last.fm/api/accounts/create** (instant, no review). Use the “API key” value. |
 | `LASTFM_USERNAME` | Whose scrobbles to watch | Your own Last.fm username — the account your player scrobbles to. |
 | `SUBSONIC_USER` / `SUBSONIC_PASS` | Playlist creation, library rescans, lyrics lookups via Navidrome's Subsonic API | The login of your **own Navidrome server** (Admin → Users). Any user with playlist permissions works. |
+| `MUSIC_ROOT` | The library folder downloads go into | Same folder Navidrome scans. |
+| `LIBRARY_MOUNT` | The drive the library is on. If it is not mounted, every automation skips its run instead of writing to the empty mountpoint. | `findmnt -T "$MUSIC_ROOT"`. **Empty** if the library is not on its own drive. |
+| `NTFY_URL` (+ `NTFY_TOKEN`) | Notifications, and your replies to the discovery list | Any [ntfy](https://ntfy.sh) topic: self-hosted or ntfy.sh. The token only if your server requires auth. |
 
-Optional overrides (defaults in `.env.example`): `SUBSONIC_URL`, `MUSIC_ROOT`,
-`LIBRARY_MOUNT`, `NTFY_URL`, `TIDDL_BINARY`, `TIDDL_PYTHON`, `TIDDL_CONFIG`.
+Other settings, with defaults, are in `.env.example` (Navidrome container name,
+Subsonic URL, tiddl paths, dedup topic).
 
-**Tidal access** needs no key in `.env`: run `tiddl auth login` once and complete
-the browser login. The token is stored in `~/tiddl.json` and refreshed
-automatically by the automations. **Notifications** need no key either — any
-[ntfy](https://ntfy.sh) topic URL works (self-hosted or ntfy.sh).
+### 3. The tiddl fix
 
-### 3. Install & verify
+tiddl raises its own `ApiError(**response)`, which crashes with `TypeError` when
+Tidal's error response has an extra key — and the download loop swallows that
+per track, so albums come down incomplete with exit code 0. Upstream closed it
+as wontfix ([#351](https://github.com/oskvr37/tiddl/issues/351)).
+`scripts/patch_tiddl.py` adds `**kwargs` to the two constructors. `pipx upgrade`
+undoes it; `monitor.py` checks every run and alerts on ntfy, then re-run the script.
+
+### 4. Try it, then install the timers
 
 ```bash
-./systemd/install.sh      # symlinks user units + timers, enables them
-python3 -m pytest tests   # ~90 tests; no network needed except one Tidal auth check
+python3 -m pytest tests     # 93 tests, no network or music needed
+python3 monitor.py          # one run by hand
+./systemd/install.sh        # user-level units + timers (no sudo)
 systemctl --user list-timers
 ```
 
-Then play a track 3 times and watch `journalctl --user -u auto-library` — or
-just run `python3 monitor.py` once by hand.
+Cloned to `~/projects/auto-library`, the units are symlinked from `systemd/`;
+anywhere else, `install.sh` writes copies with the real path. On a headless
+server, `sudo loginctl enable-linger $USER` so the timers run while you are
+logged out.
+
+Then play a track 3 times and watch `journalctl --user -u auto-library`.
+
+## Repo map
+
+| Path | What |
+|---|---|
+| `musiclib.py` | Shared core: `.env` config, logs, ntfy, Subsonic client, Navidrome SQL, drive guard, tiddl token |
+| `monitor.py` | The 6-hourly run: scrobbles → play counts → downloads, retries, album watch |
+| `smart_download.py` | Finds the right Tidal album for an artist + title and downloads it |
+| `tiddl_v2.py` | Download wrapper around tiddl that fetches real FLAC (see above) |
+| `discovery_picks.py` | Parses discovery replies (`1,3,5`, `2-4`, `all`) and downloads the picks |
+| `library_cleanup.py` | Singles retirement, verify/re-download, playlist repair, tag unify, trash/restore |
+| `dedup_*.py` | Fingerprinting (`fpcalc`), duplicate classification, the `dedup_tool.py` CLI |
+| `automations/` | The weekly/daily jobs: discovery, replies listener, playlists, Pitchfork, lyrics |
+| `scripts/` | One-off maintenance (AAC upgrade, folder fixes) and `patch_tiddl.py` |
+| `systemd/` | Unit files and `install.sh` |
+| `tests/` | pytest suite; fixtures are generated tones, not real music |
+| `database/`, `logs/` | Created at runtime, git-ignored |
 
 ## Tests
 

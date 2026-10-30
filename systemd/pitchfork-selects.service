@@ -3,7 +3,7 @@ Description=Pitchfork Selects — download this week's picks and build the Navid
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/saunalserver/projects/auto-library
+WorkingDirectory=%h/projects/auto-library
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/bin/flock -w 1800 %t/auto-library.lock /usr/bin/python3 /home/saunalserver/projects/auto-library/automations/pitchfork_selects.py
+ExecStart=/usr/bin/flock -w 1800 %t/auto-library.lock /usr/bin/python3 %h/projects/auto-library/automations/pitchfork_selects.py
 TimeoutStartSec=3h

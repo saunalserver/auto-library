@@ -16,14 +16,15 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
 from collections import defaultdict
 from pathlib import Path
 
-MUSIC_ROOT = Path("/mnt/photos/flac_music")
-NAVIDROME_CONTAINER = "navidrome"
+MUSIC_ROOT = Path(os.getenv("MUSIC_ROOT", "/mnt/photos/flac_music"))
+NAVIDROME_CONTAINER = os.getenv("NAVIDROME_CONTAINER", "navidrome")
 NAVIDROME_DB = "/data/navidrome.db"
 
 

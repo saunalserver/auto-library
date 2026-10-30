@@ -8,7 +8,7 @@ They are recognisable by the tags tiddl writes on MP4 files, which ffmpeg
 copied over: `date=YYYY-MM-DD HH:MM:SS+00:00` and no ISRC.
 
 For each album folder holding such files: download the album again through
-tiddl_v2.py into /mnt/photos/music-staging, check every file decodes and
+tiddl_v2.py into <library drive>/music-staging, check every file decodes and
 nothing is missing, then move the old folder to the music trash and the new
 one into its place (lyrics sidecars carried over). Tracks Tidal really only
 has as AAC come down as .m4a again and are left for the nightly converter.
@@ -37,7 +37,7 @@ import library_cleanup as lc  # noqa: E402
 import musiclib as m  # noqa: E402
 import smart_download  # noqa: E402
 
-STAGING = m.LIBRARY_MOUNT / "music-staging"
+STAGING = m.LIBRARY_DRIVE / "music-staging"
 REPORT = Path(__file__).resolve().parent.parent / "logs" / "upgrade_aac.json"
 MP4_DATE = re.compile(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d")
 log = m.setup_logger("upgrade-aac", "upgrade_aac.log")

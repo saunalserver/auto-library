@@ -21,6 +21,7 @@ from pathlib import Path
 
 from dedup_lib import init_dedup_schema
 import dedup_scan
+from musiclib import MUSIC_ROOT, NTFY_DEDUP_URL
 import dedup_state
 
 DEFAULT_DB = "database/monitor.db"
@@ -407,7 +408,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p_scan = sub.add_parser("scan", help="Fingerprint library + run comparison")
     _add_db_arg(p_scan)
-    p_scan.add_argument("--root", default="/mnt/photos/flac_music")
+    p_scan.add_argument("--root", default=str(MUSIC_ROOT))
     p_scan.add_argument("--workers", type=int, default=4, help="parallel fpcalc processes")
     p_scan.set_defaults(func=cmd_scan)
 
@@ -468,7 +469,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p_ntfy = sub.add_parser("ntfy-summary", help="Send pending-count to ntfy")
     _add_db_arg(p_ntfy)
-    p_ntfy.add_argument("--ntfy-url", default="http://localhost:8093/music-dedup")
+    p_ntfy.add_argument("--ntfy-url", default=NTFY_DEDUP_URL)
     p_ntfy.set_defaults(func=cmd_ntfy_summary)
 
     args = parser.parse_args(argv)

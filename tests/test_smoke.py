@@ -12,6 +12,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "automations"))
@@ -107,10 +109,13 @@ def test_check_tiddl_patch_detects_missing_kwargs_patch():
     if a pipx upgrade wipes it.
     """
     import monitor
+    import musiclib
 
+    if not Path(os.getenv("TIDDL_PYTHON", musiclib.TIDDL_PYTHON)).exists():
+        pytest.skip("tiddl is not installed here (pipx install tiddl)")
     assert monitor.check_tiddl_patch(), (
         "tiddl exceptions.py **_ patch is missing. Downloads will be silently "
-        "corrupted. Re-apply patch per LESSONS.md 'tiddl exceptions.py patched'."
+        "corrupted. Re-apply: python3 scripts/patch_tiddl.py"
     )
 
 

@@ -951,7 +951,7 @@ def main():
             notify(
                 'TIDAL Patch Missing',
                 'tiddl exceptions.py **_ patch is gone (pipx upgrade?). '
-                'Albums will download incomplete. Re-apply per LESSONS.md.',
+                'Albums will download incomplete. Re-apply: python3 scripts/patch_tiddl.py',
                 'warning,bug', 'urgent',
             )
             set_last_auth_alert(int(time.time()))

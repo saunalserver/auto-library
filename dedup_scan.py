@@ -12,6 +12,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from musiclib import MUSIC_ROOT
 from dedup_lib import init_dedup_schema, index_file, fingerprint_file, normalize
 from mutagen import File as MutagenFile
 
@@ -148,7 +149,7 @@ def scan_library(conn: sqlite3.Connection, root: Path, workers: int = 1, prune: 
 
 def main():
     parser = argparse.ArgumentParser(description="Fingerprint the music library")
-    parser.add_argument("--root", default="/mnt/photos/flac_music")
+    parser.add_argument("--root", default=str(MUSIC_ROOT))
     parser.add_argument("--db", default="database/monitor.db")
     parser.add_argument("-v", "--verbose", action="store_true")
     parser.add_argument("--workers", type=int, default=4)

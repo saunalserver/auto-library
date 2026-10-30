@@ -11,11 +11,12 @@ Reports:
 DRY RUN ONLY. Prints a report. Does not move or delete anything.
 """
 from __future__ import annotations
+import os
 import re
 from collections import defaultdict
 from pathlib import Path
 
-MUSIC_ROOT = Path("/mnt/photos/flac_music")
+MUSIC_ROOT = Path(os.getenv("MUSIC_ROOT", "/mnt/photos/flac_music"))
 
 # Same chars tiddl's sanitizeString strips: \/:"*?<>|
 SANITIZE_PATTERN = re.compile(r'[\\/:"*?<>|]+')

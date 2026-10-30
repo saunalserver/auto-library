@@ -11,7 +11,7 @@ same fingerprints the weekly dedup scan uses) to a track on the new album.
 Titles alone are not trusted: a remix single shares its title with the album
 version.
 
-Trash is /mnt/photos/music-trash/<date>/<path relative to the library> — on
+Trash is <library drive>/music-trash/<date>/<path relative to the library> — on
 the music drive itself, so a move is an instant rename and cannot fill the
 system disk. Nothing is ever deleted here.
 
@@ -38,7 +38,7 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import musiclib as m  # noqa: E402
 
-TRASH_ROOT = m.LIBRARY_MOUNT / "music-trash"
+TRASH_ROOT = m.LIBRARY_DRIVE / "music-trash"
 MAX_SINGLE_TRACKS = 3
 MATCH = 0.95
 

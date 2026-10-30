@@ -1,95 +1,78 @@
 #!/bin/bash
+# Auto Library — first-time setup. Checks prerequisites, writes .env, installs
+# Python deps, patches tiddl. Safe to re-run; asks before overwriting .env.
+set -uo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")"
 
-# Tidal Pipeline - Interactive Setup Script
+GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
+ok()   { echo -e "  ${GREEN}✓${NC} $*"; }
+warn() { echo -e "  ${YELLOW}!${NC} $*"; }
 
-# Colors for better UI
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+echo -e "${BLUE}== Auto Library setup ==${NC}"
 
-echo -e "${BLUE}=======================================${NC}"
-echo -e "${GREEN}   Tidal Pipeline - Setup Wizard       ${NC}"
-echo -e "${BLUE}=======================================${NC}"
-echo ""
-
-# Prerequisite check
-echo -e "${YELLOW}Checking prerequisites...${NC}"
-if ! command -v python3 &> /dev/null; then
-    echo -e "${YELLOW}Warning: 'python3' not found. Please install Python 3 to run this project.${NC}"
-fi
-if ! command -v pip &> /dev/null; then
-    echo -e "${YELLOW}Warning: 'pip' not found. Please install pip to run this project.${NC}"
-fi
-echo "Done."
-echo ""
-
-# Configuration gathering
-echo -e "${BLUE}--- Configuration ---${NC}"
-
-# Last.fm API Key
-read -p "Enter your Last.fm API Key: " lastfm_key
-while [ -z "$lastfm_key" ]; do
-    read -p "API Key cannot be empty. Enter your Last.fm API Key: " lastfm_key
+echo "Prerequisites:"
+for cmd in python3 docker fpcalc ffmpeg flac; do
+    if command -v "$cmd" >/dev/null; then ok "$cmd"; else warn "$cmd not found"; fi
 done
+TIDDL_BIN="${TIDDL_BINARY:-$HOME/.local/bin/tiddl}"
+if [ -x "$TIDDL_BIN" ]; then ok "tiddl ($TIDDL_BIN)"; else warn "tiddl not found — pipx install tiddl"; fi
 
-# Last.fm Username
-read -p "Enter your Last.fm Username: " lastfm_user
-while [ -z "$lastfm_user" ]; do
-    read -p "Username cannot be empty. Enter your Last.fm Username: " lastfm_user
-done
+ask() {  # ask VAR "prompt" [default]
+    local var="$1" prompt="$2" def="${3:-}" val
+    while true; do
+        read -r -p "  $prompt${def:+ [$def]}: " val
+        val="${val:-$def}"
+        [ -n "$val" ] && break
+        echo "  (required)"
+    done
+    printf -v "$var" '%s' "$val"
+}
 
-# Music Root
-read -p "Enter the absolute path for your Music library [e.g., /mnt/music]: " music_root
-while [ -z "$music_root" ]; do
-    read -p "Music Root cannot be empty. Enter the path: " music_root
-done
-
-if [ ! -d "$music_root" ]; then
-    echo -e "${YELLOW}Directory $music_root does not exist.${NC}"
-    read -p "Would you like to create it now? (y/n): " create_dir
-    if [[ "$docker_choice" =~ ^[Yy]$ ]]; then
-        mkdir -p "$music_root"
-        echo -e "${GREEN}Created $music_root${NC}"
-    fi
+write_env=y
+if [ -f .env ]; then
+    read -r -p ".env already exists. Overwrite it? (y/N): " write_env
 fi
+if [[ "$write_env" =~ ^[Yy]$ ]]; then
+    echo -e "\nLast.fm (https://www.last.fm/api/accounts/create):"
+    ask lastfm_key "API key"
+    ask lastfm_user "Username whose scrobbles to watch"
+    echo -e "\nNavidrome:"
+    ask sub_url "URL" "http://localhost:4534"
+    ask sub_user "User"
+    read -r -s -p "  Password: " sub_pass; echo
+    echo -e "\nLibrary:"
+    ask music_root "Music folder (absolute path)"
+    [ -d "$music_root" ] || warn "$music_root does not exist yet"
+    read -r -p "  Mountpoint of the drive it is on (empty = not a separate drive): " lib_mount
+    echo -e "\nNotifications:"
+    ask ntfy_url "ntfy topic URL" "https://ntfy.sh/auto-library-$RANDOM$RANDOM"
+    read -r -s -p "  ntfy token (empty if the topic needs none): " ntfy_token; echo
 
-# Tiddl Binary
-default_tiddl="$HOME/.local/bin/tiddl"
-read -p "Enter the path to your 'tiddl' binary [default: $default_tiddl]: " tiddl_bin
-tiddl_bin=${tiddl_bin:-$default_tiddl}
-
-# Ntfy URL
-read -p "Optional: Enter your Ntfy URL for notifications: " ntfy_url
-
-# Generate .env file
-echo ""
-echo -e "${YELLOW}Generating .env file...${NC}"
-cat > .env << EOF
+    umask 077
+    cat > .env <<EOF
 LASTFM_API_KEY=$lastfm_key
 LASTFM_USERNAME=$lastfm_user
+SUBSONIC_URL=$sub_url
+SUBSONIC_USER=$sub_user
+SUBSONIC_PASS=$sub_pass
 MUSIC_ROOT=$music_root
-TIDDL_BINARY=$tiddl_bin
+LIBRARY_MOUNT=$lib_mount
 NTFY_URL=$ntfy_url
+NTFY_TOKEN=$ntfy_token
 EOF
-
-echo -e "${GREEN}Configuration saved to .env!${NC}"
-echo ""
-
-# Installation
-read -p "Would you like to install Python dependencies now? (y/n): " install_choice
-if [[ "$install_choice" =~ ^[Yy]$ ]]; then
-    echo -e "${YELLOW}Installing dependencies...${NC}"
-    pip install -r requirements.txt
-    echo -e "${GREEN}Dependencies installed successfully!${NC}"
+    ok ".env written (mode 600) — see .env.example for the other settings"
 fi
 
-echo ""
-echo -e "${BLUE}=======================================${NC}"
-echo -e "${GREEN}   Setup Complete!                     ${NC}"
-echo -e "${BLUE}=======================================${NC}"
-echo ""
-echo -e "To start the monitor:"
-echo -e "Run manually: ${BLUE}python3 monitor.py${NC}"
-echo -e "Or deploy as a service using the provided ${BLUE}auto-library.service${NC} file."
-echo ""
+echo
+read -r -p "Install Python dependencies (pip install --user -r requirements.txt)? (y/N): " deps
+if [[ "$deps" =~ ^[Yy]$ ]]; then
+    python3 -m pip install --user -r requirements.txt || warn "pip failed — install python-dotenv and mutagen another way"
+fi
+
+echo
+python3 scripts/patch_tiddl.py || warn "tiddl patch not applied (see README → Setup)"
+
+echo -e "\n${BLUE}Next:${NC}
+  1. tiddl auth login                  # once; the automations refresh the token
+  2. python3 monitor.py                # one run by hand, watch the log
+  3. ./systemd/install.sh              # enable the timers"

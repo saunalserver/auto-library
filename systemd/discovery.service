@@ -3,7 +3,7 @@ Description=Weekly discovery suggestions — a numbered ntfy list you pick from 
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/saunalserver/projects/auto-library
+WorkingDirectory=%h/projects/auto-library
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/bin/python3 /home/saunalserver/projects/auto-library/automations/discovery_recommendations.py
+ExecStart=/usr/bin/python3 %h/projects/auto-library/automations/discovery_recommendations.py
 TimeoutStartSec=1h
